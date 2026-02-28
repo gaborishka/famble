@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { RunData, MapNode, Card, Enemy, Boss } from '../../../shared/types/game';
+import { RunData, MapNode, Card, Enemy, Boss, Relic } from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
 import { CombatArena, CombatVictorySummary } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
 import { generateFallbackNodeMap } from '../../engine/mapGenerator';
+import { EventScreen, EventEffects } from './EventScreen';
+import { ShopScreen } from './ShopScreen';
+import { CardUpgradeScreen } from './CardUpgradeScreen';
+import { PlayerHUD } from './PlayerHUD';
+import { GameImage } from '../GameImage';
 
 interface RunManagerProps {
   runData: RunData;
@@ -46,7 +51,6 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
   const [deck, setDeck] = useState<Card[]>(() => {
-    // Generate starter deck of 10 cards: 5 Strike, 4 Defend, 1 Unique
     const strike = runData.cards.find(c => c.name.trim().toLowerCase() === 'strike') || runData.cards[0];
     const defend = runData.cards.find(c => c.name.trim().toLowerCase() === 'defend') || runData.cards[1] || runData.cards[0];
     const specials = runData.cards.filter(c => c !== strike && c !== defend);
@@ -61,6 +65,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [playerHp, setPlayerHp] = useState(50);
   const [playerMaxHp, setPlayerMaxHp] = useState(50);
   const [gold, setGold] = useState(100);
+  const [relics, setRelics] = useState<Relic[]>([]);
   const [currentEnemy, setCurrentEnemy] = useState<Enemy | Boss | null>(null);
   const [campfireAction, setCampfireAction] = useState<'choosing' | 'smithing'>('choosing');
   const [rewardCards, setRewardCards] = useState<Card[]>([]);
@@ -108,13 +113,18 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     setRewardStats(null);
   };
 
+  const availableCards = useMemo(() => {
+    return runData.cards.filter(c => !isBasicStarterCard(c));
+  }, [runData.cards]);
+
+  // ── Node Selection ──
+
   const handleNodeSelect = (node: MapNode) => {
     setCurrentNodeId(node.id);
     switch (node.type) {
       case 'Combat':
       case 'Elite':
       case 'Boss':
-        // Generate an elite if it's an Elite node and no specific data was provided
         if (node.type === 'Elite' && !node.data) {
           setCurrentEnemy({
             id: 'elite-1',
@@ -145,6 +155,19 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     }
   };
 
+  // ── Completion Helpers ──
+
+  const markNodeCompleted = () => {
+    setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
+  };
+
+  const returnToMap = () => {
+    markNodeCompleted();
+    setView('map');
+  };
+
+  // ── Combat ──
+
   const handleCombatVictory = (summary: CombatVictorySummary) => {
     const updatedNodes = nodes.map(node => (
       node.id === currentNodeId ? { ...node, completed: true } : node
@@ -155,7 +178,6 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     setNodes(updatedNodes);
 
     if (currentEnemy?.id === runData.boss.id) {
-      // Victory!
       alert('Victory!');
       onReset();
     } else {
@@ -184,6 +206,8 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     onReset();
   };
 
+  // ── Reward ──
+
   const handleCardSelect = (card: Card) => {
     const rewardCard = {
       ...card,
@@ -199,6 +223,55 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     setView('map');
   };
 
+  // ── Event ──
+
+  const handleEventComplete = (effects: EventEffects) => {
+    if (effects.hpDelta) {
+      setPlayerHp(h => Math.max(1, Math.min(playerMaxHp + (effects.maxHpDelta || 0), h + effects.hpDelta!)));
+    }
+    if (effects.maxHpDelta) {
+      setPlayerMaxHp(m => Math.max(1, m + effects.maxHpDelta!));
+      if (effects.maxHpDelta > 0 && !effects.hpDelta) {
+        setPlayerHp(h => h + effects.maxHpDelta!);
+      }
+    }
+    if (effects.goldDelta) {
+      setGold(g => Math.max(0, g + effects.goldDelta!));
+    }
+    if (effects.addCard) {
+      setDeck(prev => [...prev, effects.addCard!]);
+    }
+    returnToMap();
+  };
+
+  // ── Shop ──
+
+  const handleBuyCard = (card: Card, price: number) => {
+    setGold(g => g - price);
+    setDeck(prev => [...prev, { ...card, id: `shop-buy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }]);
+  };
+
+  const handleBuyRelic = (relic: Relic, price: number) => {
+    setGold(g => g - price);
+    setRelics(prev => [...prev, relic]);
+    // Apply relic effects immediately where applicable
+    if (relic.effect === 'MaxHP') {
+      setPlayerMaxHp(m => m + relic.value);
+      setPlayerHp(h => h + relic.value);
+    }
+  };
+
+  const handleRemoveCard = (cardIndex: number, price: number) => {
+    setGold(g => g - price);
+    setDeck(prev => prev.filter((_, idx) => idx !== cardIndex));
+  };
+
+  const handleShopLeave = () => {
+    returnToMap();
+  };
+
+  // ── Campfire ──
+
   const handleCardUpgrade = (cardIndex: number) => {
     setDeck(prev => prev.map((c, idx) => {
       if (idx !== cardIndex || c.upgraded) return c;
@@ -210,13 +283,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
         cost: c.type === 'Power' ? Math.max(0, c.cost - 1) : c.cost
       };
     }));
-    handleEventComplete();
+    returnToMap();
   };
 
-  const handleEventComplete = () => {
-    setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
-    setView('map');
-  };
+  // ── Render ──
 
   if (view === 'map') {
     return (
@@ -272,160 +342,215 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   if (view === 'event') {
     return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center p-8 text-white">
-        <h2 className="text-4xl font-bold mb-8">Mysterious Event</h2>
-        <p className="text-xl mb-8 text-slate-300">You find a strange shrine. It heals you for 10 HP.</p>
-        <button
-          onClick={() => {
-            setPlayerHp(Math.min(playerMaxHp, playerHp + 10));
-            handleEventComplete();
-          }}
-          className="px-8 py-3 bg-purple-600 hover:bg-purple-500 text-white font-bold rounded-lg transition-colors"
-        >
-          Accept
-        </button>
-      </div>
+      <EventScreen
+        playerHp={playerHp}
+        playerMaxHp={playerMaxHp}
+        gold={gold}
+        currentFloor={currentFloor}
+        totalFloors={totalFloors}
+        availableCards={availableCards}
+        onComplete={handleEventComplete}
+      />
     );
   }
 
   if (view === 'shop') {
     return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center p-8 text-white">
-        <h2 className="text-4xl font-bold mb-8">Merchant</h2>
-        <p className="text-xl mb-8 text-slate-300">You have {gold} Gold.</p>
-        <div className="flex gap-4 mb-8">
-          <button
-            onClick={() => {
-              if (gold >= 50) {
-                setGold(g => g - 50);
-                setPlayerMaxHp(m => m + 5);
-                setPlayerHp(h => h + 5);
-              }
-            }}
-            disabled={gold < 50}
-            className="px-8 py-3 bg-yellow-600 hover:bg-yellow-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-bold rounded-lg transition-colors"
-          >
-            Buy Waffle (50g) - +5 Max HP
-          </button>
-        </div>
-        <button
-          onClick={handleEventComplete}
-          className="px-8 py-3 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-lg transition-colors"
-        >
-          Leave
-        </button>
-      </div>
+      <ShopScreen
+        playerHp={playerHp}
+        playerMaxHp={playerMaxHp}
+        gold={gold}
+        currentFloor={currentFloor}
+        totalFloors={totalFloors}
+        deck={deck}
+        availableCards={availableCards}
+        ownedRelics={relics}
+        onBuyCard={handleBuyCard}
+        onBuyRelic={handleBuyRelic}
+        onRemoveCard={handleRemoveCard}
+        onLeave={handleShopLeave}
+      />
     );
   }
 
   if (view === 'treasure') {
     return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center p-8 text-white">
-        <h2 className="text-4xl font-bold mb-8">Treasure Chest</h2>
-        <p className="text-xl mb-8 text-slate-300">You found 100 Gold!</p>
-        <button
-          onClick={() => {
-            setGold(g => g + 100);
-            handleEventComplete();
-          }}
-          className="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg transition-colors"
-        >
-          Open
-        </button>
+      <div className="w-full h-full bg-[#0b1021] flex flex-col overflow-y-auto text-white relative">
+        {/* Ambient gold glow */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-amber-500/8 rounded-full blur-[120px] animate-pulse" />
+        </div>
+
+        <PlayerHUD
+          playerHp={playerHp}
+          playerMaxHp={playerMaxHp}
+          gold={gold}
+          currentFloor={currentFloor}
+          totalFloors={totalFloors}
+        />
+
+        <div className="flex-1 flex flex-col items-center px-4 sm:px-6 pb-8 pt-2 relative z-10">
+          {/* Treasure Illustration */}
+          <div className="w-full max-w-md h-44 sm:h-52 rounded-lg border-2 border-amber-600/30 overflow-hidden mb-8 bg-slate-800 shadow-2xl shadow-amber-500/10">
+            <GameImage
+              prompt="ornate treasure chest overflowing with gold coins and gems in a stone dungeon, warm golden light emanating from chest, fantasy game art, atmospheric, digital painting"
+              className="w-full h-full"
+              alt="Treasure Chest"
+              type="background"
+            />
+          </div>
+
+          {/* Title + Divider + Description */}
+          <div className="text-center mb-8 max-w-lg">
+            <h2 className="text-3xl sm:text-4xl font-bold text-amber-300 mb-3 tracking-tight">Treasure Chest</h2>
+            <div className="w-48 h-px mx-auto bg-gradient-to-r from-transparent via-amber-500/50 to-transparent mb-5" />
+            <p className="text-slate-400 text-base leading-relaxed px-2">
+              A hidden cache of riches, untouched for ages. The gold glimmers in the dim light, beckoning you to claim it.
+            </p>
+          </div>
+
+          {/* Reward Display */}
+          <div className="flex items-center gap-3 bg-amber-900/20 border border-amber-500/30 rounded-xl px-6 py-4 mb-8">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-amber-300 to-amber-500 flex items-center justify-center border-2 border-amber-600 shadow-lg shadow-amber-500/30">
+              <span className="text-lg font-black text-amber-900">C</span>
+            </div>
+            <div>
+              <div className="text-2xl font-bold text-amber-300">+100 Gold</div>
+              <div className="text-sm text-slate-400">Added to your purse</div>
+            </div>
+          </div>
+
+          {/* Claim Button */}
+          <button
+            onClick={() => {
+              setGold(g => g + 100);
+              returnToMap();
+            }}
+            className="w-full max-w-lg flex items-center gap-4 px-4 py-4 rounded-lg border-l-4 border-l-amber-500 bg-slate-800/60 hover:bg-slate-700/80 transition-all cursor-pointer text-left group"
+          >
+            <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center shrink-0 text-white shadow-lg">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5">
+                <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                <path d="M9 12l2 2 4-4" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-white text-base leading-snug">Claim the treasure</div>
+              <div className="text-sm text-slate-400 leading-snug mt-0.5">Take the gold and continue your journey</div>
+            </div>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5 text-slate-500 group-hover:text-white transition-colors shrink-0">
+              <path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+
+          {/* Footer */}
+          <p className="text-slate-500 italic text-sm tracking-wide mt-8">
+            Fortune favors the bold.
+          </p>
+        </div>
       </div>
     );
   }
 
   if (view === 'campfire') {
-    const upgradableCards = deck.filter(card => !card.upgraded);
+    const healAmount = Math.floor(playerMaxHp * 0.3);
 
     return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center p-8 text-white relative">
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-20">
-          <div className="w-64 h-64 bg-orange-600 rounded-full blur-[100px] animate-pulse"></div>
+      <div className="w-full h-full bg-[#0b1021] flex flex-col overflow-y-auto text-white relative">
+        {/* Ambient campfire glows */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="absolute left-1/2 top-1/3 -translate-x-1/2 w-80 h-80 bg-orange-600/15 rounded-full blur-[120px] animate-pulse" />
+          <div className="absolute left-1/2 top-1/2 -translate-x-1/2 w-48 h-48 bg-amber-500/10 rounded-full blur-[80px] animate-pulse" style={{ animationDelay: '1s' }} />
         </div>
 
-        <h2 className="text-5xl font-bold mb-12 relative z-10 text-orange-400">Rest Site</h2>
+        <PlayerHUD
+          playerHp={playerHp}
+          playerMaxHp={playerMaxHp}
+          gold={gold}
+          currentFloor={currentFloor}
+          totalFloors={totalFloors}
+        />
 
-        {campfireAction === 'choosing' ? (
-          <div className="flex gap-8 relative z-10">
-            <button
-              onClick={() => {
-                const heal = Math.floor(playerMaxHp * 0.3);
-                setPlayerHp(h => Math.min(playerMaxHp, h + heal));
-                handleEventComplete();
-              }}
-              className="flex flex-col items-center justify-center w-48 h-48 bg-emerald-900/40 hover:bg-emerald-800/60 border-2 border-emerald-500/50 hover:border-emerald-400 rounded-2xl transition-all group"
-            >
-              <span className="text-4xl mb-4 group-hover:scale-110 transition-transform">💤</span>
-              <span className="text-2xl font-bold text-white mb-2">Rest</span>
-              <span className="text-sm text-emerald-300">Heal {Math.floor(playerMaxHp * 0.3)} HP</span>
-            </button>
+        <div className="flex-1 flex flex-col items-center px-4 sm:px-6 pb-8 pt-2 relative z-10">
+          {campfireAction === 'choosing' ? (
+            <>
+              {/* Campfire Illustration */}
+              <div className="w-full max-w-md h-44 sm:h-52 rounded-lg border-2 border-orange-600/30 overflow-hidden mb-8 bg-slate-800 shadow-2xl shadow-orange-500/10">
+                <GameImage
+                  prompt="cozy campfire at night in a dark forest clearing with warm orange flames and glowing embers, fantasy game art, atmospheric lighting, digital painting"
+                  className="w-full h-full"
+                  alt="Rest Site"
+                  type="background"
+                />
+              </div>
 
-            <button
-              onClick={() => setCampfireAction('smithing')}
-              className="flex flex-col items-center justify-center w-48 h-48 bg-amber-900/40 hover:bg-amber-800/60 border-2 border-amber-500/50 hover:border-amber-400 rounded-2xl transition-all group"
-            >
-              <span className="text-4xl mb-4 group-hover:scale-110 transition-transform">🔨</span>
-              <span className="text-2xl font-bold text-white mb-2">Smith</span>
-              <span className="text-sm text-amber-300">Upgrade a card</span>
-            </button>
-          </div>
-        ) : (
-          <div className="relative z-10 w-full max-w-4xl">
-            <div className="text-center mb-6">
-              <h3 className="text-2xl font-semibold text-amber-300">Choose a card to upgrade</h3>
-              <p className="text-slate-300 mt-2">Attack/Skill: +3 value, Power: -1 cost (min 0)</p>
-            </div>
+              {/* Title + Description */}
+              <div className="text-center mb-8 max-w-lg">
+                <h2 className="text-3xl sm:text-4xl font-bold text-orange-400 mb-3 tracking-tight">Rest Site</h2>
+                <div className="w-48 h-px mx-auto bg-gradient-to-r from-transparent via-orange-500/50 to-transparent mb-5" />
+                <p className="text-slate-400 text-base leading-relaxed px-2">
+                  The warmth of the fire soothes your aching muscles. You may rest to recover your strength, or use the forge to hone your cards.
+                </p>
+              </div>
 
-            {upgradableCards.length === 0 ? (
-              <div className="bg-slate-900/70 border border-slate-700 rounded-xl p-6 text-center">
-                <p className="text-lg text-slate-200 mb-4">All cards are already upgraded.</p>
+              {/* Choices */}
+              <div className="w-full max-w-lg space-y-3 mb-8">
+                {/* Rest Option */}
                 <button
-                  onClick={handleEventComplete}
-                  className="px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold transition-colors"
+                  onClick={() => {
+                    setPlayerHp(h => Math.min(playerMaxHp, h + healAmount));
+                    returnToMap();
+                  }}
+                  className="w-full flex items-center gap-4 px-4 py-4 rounded-lg border-l-4 border-l-emerald-500 bg-slate-800/60 hover:bg-slate-700/80 transition-all cursor-pointer text-left group"
                 >
-                  Continue
+                  <div className="w-10 h-10 rounded-full bg-emerald-500 flex items-center justify-center shrink-0 text-white shadow-lg">
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-white text-base leading-snug">Rest by the fire</div>
+                    <div className="text-sm text-slate-400 leading-snug mt-0.5">Heal <span className="text-emerald-400 font-semibold">{healAmount} HP</span> (30% of max)</div>
+                  </div>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5 text-slate-500 group-hover:text-white transition-colors shrink-0">
+                    <path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+
+                {/* Smith Option */}
+                <button
+                  onClick={() => setCampfireAction('smithing')}
+                  className="w-full flex items-center gap-4 px-4 py-4 rounded-lg border-l-4 border-l-amber-500 bg-slate-800/60 hover:bg-slate-700/80 transition-all cursor-pointer text-left group"
+                >
+                  <div className="w-10 h-10 rounded-full bg-amber-500 flex items-center justify-center shrink-0 text-white shadow-lg">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-5 h-5">
+                      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-white text-base leading-snug">Smith at the forge</div>
+                    <div className="text-sm text-slate-400 leading-snug mt-0.5">Upgrade a card in your deck</div>
+                  </div>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} className="w-5 h-5 text-slate-500 group-hover:text-white transition-colors shrink-0">
+                    <path d="M9 18l6-6-6-6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </button>
               </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[420px] overflow-auto pr-1">
-                  {deck.map((card, idx) => (
-                    <button
-                      key={`${card.id}-${idx}`}
-                      onClick={() => handleCardUpgrade(idx)}
-                      disabled={card.upgraded}
-                      className={`text-left p-4 rounded-xl border transition-all ${card.upgraded
-                          ? 'bg-slate-900/50 border-slate-700 text-slate-500 cursor-not-allowed'
-                          : 'bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40 hover:border-amber-400'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-bold text-lg">{card.name}{card.upgraded ? ' +' : ''}</span>
-                        <span className="text-sm text-slate-300">{card.type} • Cost {card.cost}</span>
-                      </div>
-                      <div className="text-sm text-slate-200 space-x-3">
-                        {typeof card.damage === 'number' && <span>DMG {card.damage}</span>}
-                        {typeof card.block === 'number' && <span>BLK {card.block}</span>}
-                        {typeof card.damage !== 'number' && typeof card.block !== 'number' && <span>Utility card</span>}
-                      </div>
-                    </button>
-                  ))}
-                </div>
 
-                <div className="mt-6 flex justify-center">
-                  <button
-                    onClick={() => setCampfireAction('choosing')}
-                    className="px-6 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg font-bold transition-colors"
-                  >
-                    Back
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        )}
+              {/* Footer */}
+              <p className="text-slate-500 italic text-sm tracking-wide">
+                The fire crackles softly. Take your time.
+              </p>
+            </>
+          ) : (
+            <CardUpgradeScreen
+              deck={deck}
+              cost={0}
+              onUpgrade={handleCardUpgrade}
+              onBack={() => setCampfireAction('choosing')}
+            />
+          )}
+        </div>
       </div>
     );
   }

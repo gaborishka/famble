@@ -658,7 +658,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       </div>
 
       {/* Arena Center */}
-      <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative z-10">
+      <div className="flex-1 min-h-0 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative z-10">
         {/* Player Sprite */}
         <div id="combat-player" className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
           {/* Low HP Pulsation */}
@@ -818,7 +818,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       </div>
 
       {/* Bottom Area: Hand & Controls */}
-      <div className="mt-auto relative h-64 z-20">
+      <div className="mt-auto relative h-64 shrink-0 z-20">
         <div className="absolute bottom-6 right-8 z-50 flex items-end gap-6">
           <div className="flex gap-4 mb-2">
             <div className="relative group cursor-pointer hover:-translate-y-1 transition-transform">
