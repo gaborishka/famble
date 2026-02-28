@@ -15,15 +15,41 @@ type EnemyAnimState = 'idle' | 'attack' | 'hit' | 'buff' | 'defend' | 'debuff' |
 const PRIMARY_ENEMY_ANIM_MS = 320;
 const SECONDARY_ENEMY_ANIM_MS = 260;
 
+const breathingTransition = {
+  y: { duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+  scaleY: { duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+  scaleX: { duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+};
+
 const playerVariants = {
-  idle: { x: 0, scale: 1, filter: 'brightness(1)' },
+  idle: {
+    x: 0,
+    y: [0, -4],
+    scaleY: [1, 1.012],
+    scaleX: [1, 0.994],
+    filter: 'brightness(1)',
+    transition: breathingTransition,
+  },
   attack: { x: [0, 60, -10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
   hit: { x: [0, -15, 15, -15, 15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
   buff: { filter: ['brightness(1)', 'brightness(1.5) drop-shadow(0 0 15px #3b82f6)', 'brightness(1)'], scale: [1, 1.05, 1], transition: { duration: 0.5 } }
 };
 
+const enemyBreathingTransition = {
+  y: { duration: 3, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+  scaleY: { duration: 3, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+  scaleX: { duration: 3, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+};
+
 const enemyVariants = {
-  idle: { x: 0, scale: 1, filter: 'brightness(1)' },
+  idle: {
+    x: 0,
+    y: [0, -5],
+    scaleY: [1, 1.015],
+    scaleX: [1, 0.992],
+    filter: 'brightness(1)',
+    transition: enemyBreathingTransition,
+  },
   attack: { x: [0, -60, 10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
   hit: { x: [0, 15, -15, 15, -15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
   buff: { filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'], scale: [1, 1.06, 1], transition: { duration: 0.45 } },
@@ -475,7 +501,11 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         {/* Player Sprite */}
         <div id="combat-player" className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
           {/* Ground Shadow */}
-          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
+          <motion.div
+            animate={{ scaleX: [1, 0.92, 1], opacity: [0.6, 0.5, 0.6] }}
+            transition={{ duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' }}
+            className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0"
+          />
           <motion.div
             variants={playerVariants}
             initial="idle"
@@ -549,7 +579,11 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           </div>
 
           {/* Ground Shadow */}
-          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${(enemy as Boss).enrageThreshold ? 'w-64 h-12' : 'w-40 h-8'}`} />
+          <motion.div
+            animate={{ scaleX: [1, 0.9, 1], opacity: [0.6, 0.48, 0.6] }}
+            transition={{ duration: 3, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' }}
+            className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${(enemy as Boss).enrageThreshold ? 'w-64 h-12' : 'w-40 h-8'}`}
+          />
           <motion.div
             variants={enemyVariants}
             initial="idle"
