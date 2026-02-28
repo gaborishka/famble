@@ -1,0 +1,5 @@
+{
+  "name": "Famble",
+  "description": "Upload any content to generate a unique Slay the Spire-style roguelike deckbuilder with custom cards, enemies, and boss.",
+  "requestFramePermissions": []
+}

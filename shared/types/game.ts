@@ -1,0 +1,89 @@
+export interface Card {
+  id: string;
+  name: string;
+  cost: number;
+  type: 'Attack' | 'Skill' | 'Power';
+  description: string;
+  damage?: number;
+  block?: number;
+  magicNumber?: number;
+  tags: string[];
+  audioPrompt?: string;
+  imagePrompt?: string;
+}
+
+export interface Intent {
+  type: 'Attack' | 'Defend' | 'Buff' | 'Debuff';
+  value: number;
+  description: string;
+}
+
+export interface Enemy {
+  id: string;
+  name: string;
+  maxHp: number;
+  currentHp: number;
+  intents: Intent[];
+  description: string;
+  audioPrompt?: string;
+  imagePrompt?: string;
+  statusEffects?: Record<string, number>;
+}
+
+export interface Boss extends Enemy {
+  enrageThreshold: number;
+  phase2Intents: Intent[];
+}
+
+export interface Synergy {
+  name?: string;
+  tag: string;
+  threshold: number;
+  effect: 'Damage' | 'Block' | 'Draw' | 'Energy';
+  value: number;
+  description: string;
+}
+
+export interface GameState {
+  playerHp: number;
+  playerMaxHp: number;
+  energy: number;
+  maxEnergy: number;
+  deck: Card[];
+  hand: Card[];
+  discardPile: Card[];
+  drawPile: Card[];
+  exhaustPile: Card[];
+  currentEnemy: Enemy | Boss | null;
+  turn: number;
+  tagsPlayedThisTurn: Record<string, number>;
+  statusEffects: Record<string, number>;
+}
+
+export interface MapNode {
+  id: string;
+  type: 'Combat' | 'Event' | 'Shop' | 'Treasure' | 'Boss';
+  x: number;
+  y: number;
+  nextNodes: string[];
+  completed: boolean;
+  data?: any; // e.g. Enemy ID
+}
+
+export interface RunState {
+  currentNodeId: string | null;
+  visitedNodes: string[];
+  deck: Card[];
+  playerHp: number;
+  playerMaxHp: number;
+  gold: number;
+}
+
+export interface RunData {
+  theme: string;
+  cards: Card[];
+  enemies: Enemy[];
+  boss: Boss;
+  synergies: Synergy[];
+  node_map?: MapNode[];
+}
