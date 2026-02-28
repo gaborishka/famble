@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { RunData } from '../../../shared/types/game';
-import { generateRunData } from '../../services/geminiService';
+import { generateRunData, preloadFirstCombatImages, preloadBackgroundImages } from '../../services/geminiService';
 import { motion } from 'motion/react';
 import { Upload, Sparkles, Loader2, Image as ImageIcon, FileText } from 'lucide-react';
 
@@ -30,6 +30,7 @@ interface GeneratorProps {
 export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('Generating Run...');
   const [error, setError] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -55,6 +56,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
     }
 
     setIsGenerating(true);
+    setLoadingMessage('Generating Run Data...');
     setError(null);
 
     try {
@@ -69,17 +71,26 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
       }
 
       const runData = await generateRunData(prompt || 'Generate a random theme based on this file.', fileData);
+
+      setLoadingMessage('Preloading Room 1 Graphics...');
+      await preloadFirstCombatImages(runData);
+
+      // Start background preload quietly
+      preloadBackgroundImages(runData);
+
       onGenerated(runData);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to generate game data. Please try again.');
     } finally {
       setIsGenerating(false);
+      setLoadingMessage('Generating Run...');
     }
   };
 
   const handleDemoMode = async (demo: typeof DEMO_PRESETS[0]) => {
     setIsGenerating(true);
+    setLoadingMessage('Generating Run Data...');
     setError(null);
 
     // Bypass completely for the instant mode
@@ -110,11 +121,17 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
 
         try {
           const runData = await generateRunData(demo.prompt, { mimeType: blob.type, data: base64Data });
+
+          setLoadingMessage('Preloading Room 1 Graphics...');
+          await preloadFirstCombatImages(runData);
+          preloadBackgroundImages(runData);
+
           onGenerated(runData);
         } catch (err: any) {
           console.error(err);
           setError(err.message || 'Failed to generate game data. Please try again.');
           setIsGenerating(false);
+          setLoadingMessage('Generating Run...');
         }
       };
       reader.readAsDataURL(blob);
@@ -122,6 +139,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
       console.error(err);
       setError('Failed to load demo image.');
       setIsGenerating(false);
+      setLoadingMessage('Generating Run...');
     }
   };
 
@@ -255,7 +273,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
             {isGenerating ? (
               <>
                 <Loader2 className="w-5 h-5 animate-spin" />
-                Generating Run...
+                {loadingMessage}
               </>
             ) : (
               <>
