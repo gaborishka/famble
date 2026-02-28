@@ -49,6 +49,8 @@ Return the data strictly matching the provided JSON schema.`,
           theme: { type: Type.STRING, description: 'The overall theme of the run' },
           cards: {
             type: Type.ARRAY,
+            minItems: 7,
+            maxItems: 7,
             items: {
               type: Type.OBJECT,
               properties: {
@@ -69,6 +71,8 @@ Return the data strictly matching the provided JSON schema.`,
           },
           enemies: {
             type: Type.ARRAY,
+            minItems: 4,
+            maxItems: 4,
             items: {
               type: Type.OBJECT,
               properties: {
@@ -139,6 +143,8 @@ Return the data strictly matching the provided JSON schema.`,
           },
           synergies: {
             type: Type.ARRAY,
+            minItems: 1,
+            maxItems: 1,
             items: {
               type: Type.OBJECT,
               properties: {

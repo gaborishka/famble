@@ -11,13 +11,18 @@ interface RunManagerProps {
 }
 
 export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
+  const isBasicStarterCard = (card: Card): boolean => {
+    const normalized = card.name.trim().toLowerCase();
+    return normalized === 'strike' || normalized === 'defend';
+  };
+
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
   const [deck, setDeck] = useState<Card[]>(() => {
     // Generate starter deck of 10 cards: 5 Strike, 4 Defend, 1 Unique
-    const strike = runData.cards.find(c => c.name.toLowerCase().includes('strike')) || runData.cards[0];
-    const defend = runData.cards.find(c => c.name.toLowerCase().includes('defend')) || runData.cards[1] || runData.cards[0];
+    const strike = runData.cards.find(c => c.name.trim().toLowerCase() === 'strike') || runData.cards[0];
+    const defend = runData.cards.find(c => c.name.trim().toLowerCase() === 'defend') || runData.cards[1] || runData.cards[0];
     const specials = runData.cards.filter(c => c !== strike && c !== defend);
     const uniqueCard = specials[0] || runData.cards[2] || strike;
 
@@ -169,8 +174,9 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   if (view === 'reward') {
     // Generate 3 random cards from runData.cards, excluding basic Strike/Defend
-    const rewardPool = runData.cards.filter(c => !c.name.toLowerCase().includes('strike') && !c.name.toLowerCase().includes('defend'));
-    const rewardCards = [...rewardPool].sort(() => Math.random() - 0.5).slice(0, 3);
+    const rewardPool = runData.cards.filter(c => !isBasicStarterCard(c));
+    const rewardSource = rewardPool.length > 0 ? rewardPool : runData.cards;
+    const rewardCards = [...rewardSource].sort(() => Math.random() - 0.5).slice(0, 3);
     return <CardReward cards={rewardCards} onSelect={handleCardSelect} onSkip={handleSkipReward} />;
   }
 

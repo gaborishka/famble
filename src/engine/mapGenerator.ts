@@ -49,6 +49,12 @@ const createEliteFromEnemy = (enemy: Enemy, eliteIndex: number): Enemy => {
   const intentMultiplier = 1.35;
   const maxHp = Math.max(35, Math.round(enemy.maxHp * hpMultiplier));
 
+  const scaleIntentValue = (value: number): number => {
+    if (value > 0) return Math.max(1, Math.round(value * intentMultiplier));
+    if (value < 0) return Math.min(-1, Math.round(value * intentMultiplier));
+    return 0;
+  };
+
   return {
     ...enemy,
     id: `elite-${enemy.id}-${eliteIndex}`,
@@ -58,7 +64,10 @@ const createEliteFromEnemy = (enemy: Enemy, eliteIndex: number): Enemy => {
     description: `${enemy.description} This foe has been empowered as an elite encounter.`,
     intents: enemy.intents.map(intent => ({
       ...intent,
-      value: Math.max(1, Math.round(intent.value * intentMultiplier)),
+      value: scaleIntentValue(intent.value),
+      secondaryValue: typeof intent.secondaryValue === 'number'
+        ? scaleIntentValue(intent.secondaryValue)
+        : intent.secondaryValue,
     })),
   };
 };

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { GameState, Card, Enemy, Boss, RunData } from '../../../shared/types/game';
+import { GameState, Card, Enemy, Boss, RunData, Intent } from '../../../shared/types/game';
 import { initializeCombat, endTurn } from '../../engine/combatEngine';
 import { resolveCard } from '../../engine/cardResolver';
 import { checkSynergies } from '../../engine/synergyEngine';
@@ -9,6 +9,11 @@ import { generateSoundEffect, generateMusic, generateBossTTS } from '../../servi
 import { Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameImage } from '../GameImage';
+
+const ATTACK_INTENT_TYPES = new Set(['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff']);
+type EnemyAnimState = 'idle' | 'attack' | 'hit' | 'buff' | 'defend' | 'debuff' | 'unknown';
+const PRIMARY_ENEMY_ANIM_MS = 320;
+const SECONDARY_ENEMY_ANIM_MS = 260;
 
 const playerVariants = {
   idle: { x: 0, scale: 1, filter: 'brightness(1)' },
@@ -21,7 +26,10 @@ const enemyVariants = {
   idle: { x: 0, scale: 1, filter: 'brightness(1)' },
   attack: { x: [0, -60, 10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
   hit: { x: [0, 15, -15, 15, -15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
-  buff: { filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'], transition: { duration: 0.5 } }
+  buff: { filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'], scale: [1, 1.06, 1], transition: { duration: 0.45 } },
+  defend: { y: [0, -12, 0], scale: [1, 1.08, 1], filter: ['brightness(1)', 'brightness(1.3) drop-shadow(0 0 14px #60a5fa)', 'brightness(1)'], transition: { duration: 0.45 } },
+  debuff: { x: [0, -10, 10, -6, 6, 0], rotate: [0, -2, 2, -1, 1, 0], filter: ['brightness(1)', 'brightness(1.25) drop-shadow(0 0 14px #a855f7)', 'brightness(1)'], transition: { duration: 0.5 } },
+  unknown: { x: [0, -8, 8, -4, 4, 0], y: [0, -5, 0, -3, 0], rotate: [0, 3, -3, 2, -2, 0], filter: ['brightness(1)', 'brightness(1.2)', 'brightness(1)'], transition: { duration: 0.55 } }
 };
 
 interface FloatingText {
@@ -49,7 +57,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   const [isGameOver, setIsGameOver] = useState(false);
   const [isVictory, setIsVictory] = useState(false);
   const [playerAnim, setPlayerAnim] = useState<string>('idle');
-  const [enemyAnim, setEnemyAnim] = useState<string>('idle');
+  const [enemyAnim, setEnemyAnim] = useState<EnemyAnimState>('idle');
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [isMusicPlaying, setIsMusicPlaying] = useState(() => {
     const saved = localStorage.getItem('famble_music_playing');
@@ -129,6 +137,72 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   if (!gameState || !gameState.currentEnemy) {
     return <div className="text-white">Loading combat...</div>;
   }
+
+  const createFloatingText = (text: string, type: FloatingText['type'], target: FloatingText['target']) => {
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    const newText: FloatingText = {
+      id,
+      text,
+      type,
+      target,
+      xOffset: Math.random() * 40 - 20,
+      yOffset: Math.random() * 40 - 20,
+    };
+    setFloatingTexts(prev => [...prev, newText]);
+    setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== id)), 1500);
+  };
+
+  const getEnemyPrimaryAnimation = (intentType: Intent['type']): EnemyAnimState => {
+    if (ATTACK_INTENT_TYPES.has(intentType)) return 'attack';
+    if (intentType === 'Defend') return 'defend';
+    if (intentType === 'Debuff') return 'debuff';
+    if (intentType === 'Unknown') return 'unknown';
+    return 'buff';
+  };
+
+  const getEnemySecondaryAnimation = (intentType: Intent['type']): EnemyAnimState | null => {
+    if (intentType === 'AttackDefend') return 'defend';
+    if (intentType === 'AttackDebuff') return 'debuff';
+    if (intentType === 'AttackBuff') return 'buff';
+    return null;
+  };
+
+  const showIntentEffectText = (intent: Intent, useSecondaryValue = false) => {
+    const effectValue = useSecondaryValue ? (intent.secondaryValue || 0) : intent.value;
+    if (effectValue <= 0 && intent.type !== 'Unknown') return;
+
+    switch (intent.type) {
+      case 'Defend':
+      case 'AttackDefend':
+        createFloatingText(`+${effectValue} Block`, 'block', 'enemy');
+        break;
+      case 'Buff':
+      case 'AttackBuff':
+        createFloatingText(`+${effectValue} Strength`, 'buff', 'enemy');
+        break;
+      case 'Debuff':
+      case 'AttackDebuff':
+        createFloatingText(`+${effectValue} Vulnerable`, 'buff', 'player');
+        break;
+      case 'Unknown':
+        createFloatingText('???', 'synergy', 'enemy');
+        break;
+      default:
+        break;
+    }
+  };
+
+  const runEnemyIntentAnimation = (primaryAnim: EnemyAnimState, secondaryAnim: EnemyAnimState | null) => {
+    setEnemyAnim(primaryAnim);
+
+    if (secondaryAnim) {
+      setTimeout(() => setEnemyAnim(secondaryAnim), PRIMARY_ENEMY_ANIM_MS);
+      setTimeout(() => setEnemyAnim('idle'), PRIMARY_ENEMY_ANIM_MS + SECONDARY_ENEMY_ANIM_MS);
+      return;
+    }
+
+    setTimeout(() => setEnemyAnim('idle'), PRIMARY_ENEMY_ANIM_MS);
+  };
 
   const handlePlayCard = (card: Card, index: number) => {
     if (card.cost > gameState.energy || isGameOver) return;
@@ -213,7 +287,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     if (isGameOver) return;
 
     const intent = getNextIntent(gameState.currentEnemy!, gameState.turn);
-    const isAttackIntent = ['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff'].includes(intent?.type || '');
+    const isAttackIntent = ATTACK_INTENT_TYPES.has(intent?.type || '');
+    const primaryAnim = getEnemyPrimaryAnimation(intent.type);
+    const secondaryAnim = getEnemySecondaryAnimation(intent.type);
 
     if (intent && isAttackIntent) {
       if (gameState.currentEnemy!.audioPrompt) {
@@ -222,8 +298,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         });
       }
 
-      setEnemyAnim('attack');
-      setTimeout(() => setEnemyAnim('idle'), 400);
+      runEnemyIntentAnimation(primaryAnim, secondaryAnim);
 
       setTimeout(() => {
         setPlayerAnim('hit');
@@ -245,25 +320,27 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         }
 
         if (dmg > 0) {
-          const newText: FloatingText = { id: Date.now(), text: actualDmg > 0 ? `-${actualDmg}` : 'Blocked!', type: actualDmg > 0 ? 'damage' : 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 };
-          setFloatingTexts(prev => [...prev, newText]);
-          setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== newText.id)), 1500);
+          createFloatingText(actualDmg > 0 ? `-${actualDmg}` : 'Blocked!', actualDmg > 0 ? 'damage' : 'block', 'player');
         }
       }, 200);
+
+      if (secondaryAnim) {
+        setTimeout(() => showIntentEffectText(intent, true), PRIMARY_ENEMY_ANIM_MS + 20);
+      }
 
       setTimeout(() => {
         const newState = endTurn(gameState);
         if (newState.playerHp <= 0) setIsGameOver(true);
         setGameState(newState);
-      }, 400);
+      }, secondaryAnim ? PRIMARY_ENEMY_ANIM_MS + SECONDARY_ENEMY_ANIM_MS : 400);
     } else {
-      setEnemyAnim('buff');
-      setTimeout(() => setEnemyAnim('idle'), 400);
+      runEnemyIntentAnimation(primaryAnim, secondaryAnim);
+      setTimeout(() => showIntentEffectText(intent), 120);
       setTimeout(() => {
         const newState = endTurn(gameState);
         if (newState.playerHp <= 0) setIsGameOver(true);
         setGameState(newState);
-      }, 400);
+      }, secondaryAnim ? PRIMARY_ENEMY_ANIM_MS + SECONDARY_ENEMY_ANIM_MS : 400);
     }
   };
 
@@ -283,6 +360,14 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       case 'Unknown':
       default: return <span className="text-gray-400 text-2xl drop-shadow-md">❓</span>;
     }
+  };
+
+  const getIntentPrimaryDisplayValue = (type: string, value: number): string => {
+    if (type === 'Unknown') return '?';
+    if (ATTACK_INTENT_TYPES.has(type)) {
+      return String(value + (currentEnemyState.statusEffects?.['Strength'] || 0));
+    }
+    return String(value);
   };
 
   return (
@@ -417,13 +502,13 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         </div>
 
         {/* Enemy Sprite */}
-        <div id="combat-enemy" className="flex flex-col items-center justify-end h-[32rem] z-10 w-64 relative">
-          <div className="mb-4 flex flex-col items-center z-20 w-80 relative">
+        <div id="combat-enemy" className={`flex flex-col items-center justify-end z-10 relative ${(enemy as Boss).enrageThreshold ? 'h-[52rem] w-[28rem]' : 'h-[32rem] w-64'}`}>
+          <div className={`flex flex-col items-center z-50 relative ${(enemy as Boss).enrageThreshold ? 'w-96 mb-[14rem]' : 'w-80 mb-4'}`}>
             {/* Intent floating near boss's weapon */}
             <div className="absolute top-8 left-0 bg-slate-800/90 text-white drop-shadow-md flex items-center gap-2 z-30 px-3 py-1.5 rounded-xl border border-slate-600 shadow-lg">
               {getIntentIcon(intent.type)}
               <div className="flex flex-col ml-1 items-start justify-center">
-                <span className="font-bold text-xl leading-none">{intent.type === 'Unknown' ? '?' : (intent.value || '')}</span>
+                <span className="font-bold text-xl leading-none">{getIntentPrimaryDisplayValue(intent.type, intent.value)}</span>
                 {intent.secondaryValue ? <span className="text-[10px] text-slate-300 font-bold leading-none mt-1">+{intent.secondaryValue}</span> : null}
               </div>
             </div>
@@ -462,15 +547,15 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           </div>
 
           {/* Ground Shadow */}
-          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-40 h-8 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
+          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${(enemy as Boss).enrageThreshold ? 'w-64 h-12' : 'w-40 h-8'}`} />
           <motion.div
             variants={enemyVariants}
             initial="idle"
             animate={enemyAnim}
-            className="w-72 h-80 flex items-center justify-center relative z-10"
+            className={`flex items-center justify-center relative z-10 ${(enemy as Boss).enrageThreshold ? 'w-96 h-[32rem]' : 'w-72 h-80'}`}
           >
             {gameState.currentEnemy.imagePrompt ? (
-              <GameImage prompt={`A character sprite of ${gameState.currentEnemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`} className="w-[120%] h-[120%] object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)]" alt={gameState.currentEnemy.name} type="character" />
+              <GameImage prompt={`A character sprite of ${gameState.currentEnemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`} className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${(enemy as Boss).enrageThreshold ? 'scale-[1.4]' : 'scale-[1.2]'}`} alt={gameState.currentEnemy.name} type="character" />
             ) : (
               <span className="text-8xl z-10 drop-shadow-lg">{(enemy as Boss).enrageThreshold ? '👑' : '👹'}</span>
             )}
@@ -566,4 +651,3 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     </div>
   );
 };
-
