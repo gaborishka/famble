@@ -57,11 +57,13 @@ export const GameImage: React.FC<GameImageProps> = ({ prompt, className = '', al
   }
 
   return (
-    <img 
-      src={imageUrl} 
-      alt={alt} 
-      className={`object-cover ${className}`} 
-      referrerPolicy="no-referrer" 
+    <img
+      src={imageUrl}
+      alt={alt}
+      className={`object-cover ${className}`}
+      referrerPolicy="no-referrer"
+      draggable={false}
+      onDragStart={(e) => e.preventDefault()}
     />
   );
 };

@@ -195,14 +195,6 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           <motion.div
             key={`player-${gameState.playerHp}`}
             className="w-56 h-80 flex items-center justify-center relative z-10"
-            animate={{
-              y: [0, -5, 0],
-              x: gameState.playerHp < (gameState.playerMaxHp) ? [0, -5, 5, -5, 5, 0] : 0
-            }}
-            transition={{
-              y: { repeat: Infinity, duration: 3, ease: "easeInOut" },
-              x: { duration: 0.4 }
-            }}
           >
             <GameImage prompt={`A character sprite of a heroic protagonist, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-[120%] h-[120%] object-contain drop-shadow-2xl" alt="Player" type="character" />
           </motion.div>
@@ -252,14 +244,6 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           <motion.div
             key={`enemy-${enemy.id}-${gameState.currentEnemy.currentHp}`}
             className="w-72 h-80 flex items-center justify-center relative z-10"
-            animate={{
-              scale: [1, 1.02, 1],
-              x: gameState.currentEnemy.currentHp < gameState.currentEnemy.maxHp ? [0, -5, 5, -5, 5, 0] : 0
-            }}
-            transition={{
-              scale: { repeat: Infinity, duration: 2, ease: "easeInOut" },
-              x: { duration: 0.4 }
-            }}
           >
             {gameState.currentEnemy.imagePrompt ? (
               <GameImage prompt={`A character sprite of ${gameState.currentEnemy.imagePrompt}, standing on a solid green background (#00FF00), enemy character, 2D vector art`} className="w-[120%] h-[120%] object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)]" alt={gameState.currentEnemy.name} type="character" />

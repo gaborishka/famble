@@ -4,7 +4,10 @@ import { removeBackground } from '@imgly/background-removal';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
+let currentRunId = '';
+
 export async function generateRunData(prompt: string, fileData?: { mimeType: string; data: string }): Promise<RunData> {
+  currentRunId = Date.now().toString();
   const parts: any[] = [{ text: prompt }];
 
   if (fileData) {
@@ -199,6 +202,24 @@ export async function generateGameImage(prompt: string, type: 'asset' | 'backgro
           } catch (err) {
             console.error("Background removal failed, falling back to original image", err);
           }
+        }
+
+        // Save image to local filesystem via dev server plugin
+        if (currentRunId) {
+          const sanitizedPrompt = prompt.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
+          const fileName = `${type}_${sanitizedPrompt}_${Date.now()}.png`;
+
+          fetch('/api/save-image', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              runId: currentRunId,
+              fileName,
+              base64Data: url
+            })
+          }).catch(err => console.error('Failed to auto-save image locally:', err));
         }
 
         imageCache.set(cacheKey, url);

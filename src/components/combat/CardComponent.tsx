@@ -1,43 +1,28 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Card } from '../../../shared/types/game';
 import { motion } from 'motion/react';
 import { GameImage } from '../GameImage';
 
 interface CardProps {
   card: Card;
-  onPlay: (card: Card) => void;
   disabled?: boolean;
 }
 
-export const CardComponent: React.FC<CardProps> = ({ card, onPlay, disabled }) => {
-  const [isHovered, setIsHovered] = useState(false);
-
+export const CardComponent: React.FC<CardProps> = ({ card, disabled }) => {
   // Colors based on type for border and lower section
   const typeColors = {
-    Attack: { bg: 'bg-[#b91c1c]', border: 'border-[#ef4444]', text: 'text-red-100', bannerBg: 'bg-[#991b1b]' },
-    Defense: { bg: 'bg-[#1d4ed8]', border: 'border-[#3b82f6]', text: 'text-blue-100', bannerBg: 'bg-[#1e40af]' },
-    Skill: { bg: 'bg-[#ca8a04]', border: 'border-[#facc15]', text: 'text-yellow-100', bannerBg: 'bg-[#a16207]' }
+    Attack: { bg: 'bg-[#b91c1c]', border: 'border-[#ef4444]', text: 'text-red-100', bannerBg: 'bg-[#991b1b]', shadow: 'shadow-red-500/20' },
+    Defense: { bg: 'bg-[#1d4ed8]', border: 'border-[#3b82f6]', text: 'text-blue-100', bannerBg: 'bg-[#1e40af]', shadow: 'shadow-blue-500/20' },
+    Skill: { bg: 'bg-[#ca8a04]', border: 'border-[#facc15]', text: 'text-yellow-100', bannerBg: 'bg-[#a16207]', shadow: 'shadow-yellow-500/20' }
   };
-  const colors = typeColors[card.type as keyof typeof typeColors] || { bg: 'bg-slate-700', border: 'border-slate-400', bannerBg: 'bg-slate-800' };
+  const colors = typeColors[card.type as keyof typeof typeColors] || { bg: 'bg-slate-700', border: 'border-slate-400', bannerBg: 'bg-slate-800', shadow: 'shadow-slate-500/20' };
 
   return (
     <motion.div
-      onHoverStart={() => setIsHovered(true)}
-      onHoverEnd={() => setIsHovered(false)}
-      whileHover={{ scale: 1.15, y: -40, zIndex: 100 }}
-      whileTap={{ scale: 0.95 }}
-      onClick={() => !disabled && onPlay(card)}
-      className={`relative w-48 h-72 rounded-xl border-[4px] shadow-2xl flex flex-col select-none transition-colors duration-200 group ${disabled ? 'opacity-50 grayscale cursor-not-allowed border-slate-600 bg-slate-800' : `${colors.border} bg-[#1e293b] hover:shadow-[0_15px_40px_rgba(255,255,255,0.15)] cursor-pointer`
+      className={`relative w-48 h-72 rounded-xl border-[4px] flex flex-col select-none transition-colors duration-200 group ${disabled ? 'opacity-50 grayscale border-slate-600 bg-slate-800 shadow-lg' : `${colors.border} bg-[#1e293b] shadow-2xl ${colors.shadow} hover:shadow-[0_0_30px_rgba(255,255,255,0.4)]`
         }`}
       style={{ overflow: 'visible' }}
     >
-      {/* HOVERED BADGE */}
-      {isHovered && !disabled && (
-        <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-slate-900/90 border border-orange-500 text-orange-400 text-[9px] font-black px-4 py-0.5 rounded shadow-[0_0_15px_rgba(249,115,22,0.6)] z-50 tracking-widest uppercase pointer-events-none whitespace-nowrap">
-          Hovered
-        </div>
-      )}
-
       {/* Cost Badge */}
       <div className="absolute -top-4 -left-4 w-9 h-9 rounded-full bg-[#1e293b] border-[3px] border-[#cbd5e1] flex items-center justify-center text-white font-black shadow-[0_4px_10px_rgba(0,0,0,0.6)] z-30 text-base">
         {card.cost}
