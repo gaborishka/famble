@@ -10,6 +10,10 @@ export interface Card {
   tags: string[];
   audioPrompt?: string;
   imagePrompt?: string;
+  imageObjectId?: string;
+  audioObjectId?: string;
+  imageUrl?: string;
+  audioUrl?: string;
   upgraded?: boolean;
 }
 
@@ -37,6 +41,10 @@ export interface Enemy {
   description: string;
   audioPrompt?: string;
   imagePrompt?: string;
+  imageObjectId?: string;
+  audioObjectId?: string;
+  imageUrl?: string;
+  audioUrl?: string;
   statusEffects?: Record<string, number>;
 }
 
@@ -47,6 +55,8 @@ export interface Boss extends Enemy {
   narratorVoiceStyle?: string;
   narratorVoiceGender?: 'male' | 'female' | 'neutral';
   narratorVoiceAccent?: string;
+  narratorAudioObjectId?: string;
+  narratorAudioUrl?: string;
 }
 
 export interface Synergy {
@@ -68,7 +78,7 @@ export interface GameState {
   discardPile: Card[];
   drawPile: Card[];
   exhaustPile: Card[];
-  currentEnemy: Enemy | Boss | null;
+  enemies: (Enemy | Boss)[];
   turn: number;
   tagsPlayedThisTurn: Record<string, number>;
   statusEffects: Record<string, number>;
@@ -95,7 +105,7 @@ export interface RunState {
   relics: Relic[];
 }
 
-export interface RunData {
+export interface RunDataLegacy {
   theme: string;
   cards: Card[];
   enemies: Enemy[];
@@ -104,4 +114,182 @@ export interface RunData {
   node_map?: MapNode[];
   roomMusicPrompt?: string;
   bossMusicPrompt?: string;
+  gold?: number;
+}
+
+export type GenerationMode = 'fast_start' | 'test_on_demand';
+
+export interface GenerationSettings {
+  mode: GenerationMode;
+  prefetchDepth?: number;
+}
+
+export type RoomGenerationStatus = 'queued' | 'generating' | 'ready' | 'failed';
+
+export type GeneratedObjectKind = 'image' | 'audio';
+export type GeneratedObjectStatus = 'pending' | 'generating' | 'ready' | 'failed';
+export type ImageObjectType = 'asset' | 'background' | 'character';
+export type AudioSourceType = 'card' | 'enemy' | 'boss' | 'generic';
+export type MusicModeType = 'room' | 'boss';
+
+export interface GeneratedObjectManifestEntry {
+  id: string;
+  roomId?: string;
+  kind: GeneratedObjectKind;
+  prompt: string;
+  status: GeneratedObjectStatus;
+  url?: string;
+  error?: string;
+  fileKey: string;
+  imageType?: ImageObjectType;
+  audioSource?: AudioSourceType;
+  musicMode?: MusicModeType;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface RoomObjectRefs {
+  backgroundImageId?: string;
+  playerPortraitImageId?: string;
+  playerSpriteImageId?: string;
+  enemySpriteImageId?: string;
+  enemySpriteImageIds?: string[];
+  bossSpriteImageId?: string;
+  eventImageId?: string;
+  cardImageIds?: string[];
+  roomMusicId?: string;
+  bossMusicId?: string;
+  enemySfxId?: string;
+  enemySfxIds?: string[];
+  bossSfxId?: string;
+  bossTtsId?: string;
+  cardSfxIds?: string[];
+}
+
+export interface RoomObjectUrls {
+  backgroundImageUrl?: string;
+  playerPortraitImageUrl?: string;
+  playerSpriteImageUrl?: string;
+  enemySpriteImageUrl?: string;
+  enemySpriteImageUrls?: string[];
+  bossSpriteImageUrl?: string;
+  eventImageUrl?: string;
+  cardImageUrls?: string[];
+  roomMusicUrl?: string;
+  bossMusicUrl?: string;
+  enemySfxUrl?: string;
+  enemySfxUrls?: string[];
+  bossSfxUrl?: string;
+  bossTtsUrl?: string;
+  cardSfxUrls?: string[];
+}
+
+export interface EventChoicePayload {
+  id: string;
+  label: string;
+  description: string;
+  icon?: 'fire' | 'shield' | 'gold';
+  color?: 'red' | 'blue' | 'orange';
+  effects: {
+    hpDelta?: number;
+    maxHpDelta?: number;
+    goldDelta?: number;
+    addCard?: Card;
+  };
+}
+
+export interface BaseRoomContent {
+  roomId: string;
+  nodeType: MapNode['type'];
+  objectRefs?: RoomObjectRefs;
+  objectUrls?: RoomObjectUrls;
+}
+
+export interface CombatRoomContent extends BaseRoomContent {
+  nodeType: 'Combat' | 'Elite';
+  enemies: Enemy[];
+  rewardCards?: Card[];
+  backgroundPrompt?: string;
+  roomMusicPrompt?: string;
+  backgroundImageUrl?: string;
+  roomMusicUrl?: string;
+}
+
+export interface BossRoomContent extends BaseRoomContent {
+  nodeType: 'Boss';
+  boss: Boss;
+  backgroundPrompt?: string;
+  bossMusicPrompt?: string;
+  backgroundImageUrl?: string;
+  bossMusicUrl?: string;
+}
+
+export interface EventRoomContent extends BaseRoomContent {
+  nodeType: 'Event';
+  title: string;
+  description: string;
+  imagePrompt: string;
+  imageUrl?: string;
+  footerText?: string;
+  choices: EventChoicePayload[];
+}
+
+export interface ShopRoomContent extends BaseRoomContent {
+  nodeType: 'Shop';
+  shopCards: Card[];
+}
+
+export interface TreasureRoomContent extends BaseRoomContent {
+  nodeType: 'Treasure';
+  treasureGold?: number;
+}
+
+export interface CampfireRoomContent extends BaseRoomContent {
+  nodeType: 'Campfire';
+}
+
+export type RoomContentPayload =
+  | CombatRoomContent
+  | BossRoomContent
+  | EventRoomContent
+  | ShopRoomContent
+  | TreasureRoomContent
+  | CampfireRoomContent;
+
+export interface RoomGenerationState {
+  status: RoomGenerationStatus;
+  lastUpdatedAt: number;
+  error?: string;
+  payload?: RoomContentPayload;
+}
+
+export interface RunBootstrapData {
+  theme: string;
+  starterCards: [Card, Card, Card];
+  firstEnemy: Enemy;
+  roomMusicPrompt?: string;
+  essentialSfxPrompts?: string[];
+}
+
+export interface RunDataV2 {
+  version: 2;
+  generationSettings: GenerationSettings;
+  theme: string;
+  cards: Card[];
+  enemies: Enemy[];
+  boss?: Boss;
+  synergies: Synergy[];
+  node_map: MapNode[];
+  roomMusicPrompt?: string;
+  bossMusicPrompt?: string;
+  objectManifest: Record<string, GeneratedObjectManifestEntry>;
+  rooms: Record<string, RoomGenerationState>;
+  bootstrap: RunBootstrapData;
+  gold?: number;
+}
+
+export type RunData = RunDataLegacy | RunDataV2;
+
+export function isRunDataV2(runData: RunData): runData is RunDataV2 {
+  return (runData as RunDataV2).version === 2;
 }

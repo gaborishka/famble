@@ -212,6 +212,12 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       if (!res.ok) throw new Error('Failed to load run data');
       const runData = await res.json() as RunData;
 
+      if (isRunDataV2(runData)) {
+        runData.generationSettings = runData.generationSettings || { mode: 'fast_start', prefetchDepth: 2 };
+        runData.objectManifest = runData.objectManifest || {};
+        runData.rooms = runData.rooms || {};
+      }
+
       setLoadingMessage('Restoring Room 1 Graphics...');
       if (isRunDataV2(runData)) {
         await preloadEssentialImages(runData);

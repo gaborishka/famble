@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Card, Relic } from '../../../shared/types/game';
+import { Card, Relic, ShopRoomContent } from '../../../shared/types/game';
 import { motion, AnimatePresence } from 'motion/react';
 import { PlayerHUD } from './PlayerHUD';
 import { CardComponent } from '../combat/CardComponent';
@@ -120,6 +120,7 @@ interface ShopScreenProps {
   totalFloors: number;
   deck: Card[];
   availableCards: Card[];
+  roomShop?: ShopRoomContent | null;
   ownedRelics: Relic[];
   onBuyCard: (card: Card, price: number) => void;
   onBuyRelic: (relic: Relic, price: number) => void;
@@ -135,6 +136,7 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
   totalFloors,
   deck,
   availableCards,
+  roomShop,
   ownedRelics,
   onBuyCard,
   onBuyRelic,
@@ -143,6 +145,12 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
 }) => {
   // Generate shop inventory once per mount
   const shopCards = useMemo(() => {
+    if (roomShop?.shopCards && roomShop.shopCards.length > 0) {
+      return roomShop.shopCards.slice(0, 3).map((card, idx) => ({
+        card: { ...card, id: `shop-room-${idx}-${card.id}-${Date.now()}` },
+        price: getCardPrice(card),
+      }));
+    }
     const pool = availableCards.filter(c => {
       const n = c.name.trim().toLowerCase();
       return n !== 'strike' && n !== 'defend';
@@ -152,7 +160,7 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
       card: { ...card, id: `shop-${card.id}-${Date.now()}` },
       price: getCardPrice(card),
     }));
-  }, [availableCards]);
+  }, [availableCards, roomShop]);
 
   const shopRelics = useMemo(() => {
     const ownedIds = new Set(ownedRelics.map(r => r.id));

@@ -1,4 +1,4 @@
-import { Boss, RunData } from '../../shared/types/game';
+import { Boss, RoomContentPayload, RunData, RunDataV2, isRunDataV2 } from '../../shared/types/game';
 import { getCurrentRunId } from './geminiService';
 
 const audioCache = new Map<string, string>();
@@ -52,11 +52,15 @@ interface SoundEffectOptions {
     durationSeconds?: number;
     theme?: string;
     source?: SoundSource;
+    cacheTag?: string;
+    fileTag?: string;
 }
 
 interface MusicOptions {
     theme?: string;
     mode?: MusicMode;
+    cacheTag?: string;
+    fileTag?: string;
 }
 
 interface BossTTSOptions {
@@ -64,6 +68,8 @@ interface BossTTSOptions {
     voiceStyle?: string;
     voiceGender?: Boss['narratorVoiceGender'];
     voiceAccent?: string;
+    cacheTag?: string;
+    fileTag?: string;
 }
 
 interface ElevenModel {
@@ -163,6 +169,35 @@ function getVoiceSettings(theme?: string): { stability: number; similarity_boost
 
 function toFileSafeKey(input: string): string {
     return input.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
+}
+
+function nowTs(): number {
+    return Date.now();
+}
+
+function markManifestReady(runData: RunData | RunDataV2, objectId: string | undefined, url: string | undefined) {
+    if (!objectId || !url || !isRunDataV2(runData)) return;
+    const existing = runData.objectManifest[objectId];
+    if (!existing) return;
+    runData.objectManifest[objectId] = {
+        ...existing,
+        status: 'ready',
+        url,
+        error: undefined,
+        updatedAt: nowTs(),
+    };
+}
+
+function markManifestFailed(runData: RunData | RunDataV2, objectId: string | undefined, error: unknown) {
+    if (!objectId || !isRunDataV2(runData)) return;
+    const existing = runData.objectManifest[objectId];
+    if (!existing) return;
+    runData.objectManifest[objectId] = {
+        ...existing,
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+        updatedAt: nowTs(),
+    };
 }
 
 function getModelId(model: ElevenModel): string {
@@ -488,7 +523,8 @@ export async function generateSoundEffect(prompt: string, options: SoundEffectOp
     const normalizedPrompt = normalizeAudioFragment(prompt, 'arcane strike with metallic tail', 18);
     const source = options.source || 'generic';
     const theme = normalizeTheme(options.theme);
-    const cacheKey = `sfx:${source}:${theme}:${normalizedPrompt}`;
+    const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
+    const cacheKey = `sfx:${source}:${theme}:${normalizedPrompt}${cacheTag}`;
 
     if (audioCache.has(cacheKey)) {
         return audioCache.get(cacheKey)!;
@@ -498,7 +534,8 @@ export async function generateSoundEffect(prompt: string, options: SoundEffectOp
         return pendingRequests.get(cacheKey)!;
     }
 
-    const fileName = `sfx_${source}_${toFileSafeKey(normalizedPrompt)}.mp3`;
+    const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
+    const fileName = `sfx_${source}${tagged}_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const legacyFileName = `sfx_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, [fileName, legacyFileName]);
     if (existing) {
@@ -541,7 +578,8 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
     const normalizedPrompt = normalizeAudioFragment(prompt, 'ominous strings over restrained percussion', 22);
     const mode = options.mode || 'room';
     const theme = normalizeTheme(options.theme);
-    const cacheKey = `music:${mode}:${theme}:${normalizedPrompt}`;
+    const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
+    const cacheKey = `music:${mode}:${theme}:${normalizedPrompt}${cacheTag}`;
 
     if (audioCache.has(cacheKey)) {
         return audioCache.get(cacheKey)!;
@@ -551,7 +589,8 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
         return pendingRequests.get(cacheKey)!;
     }
 
-    const fileName = `bgm_${mode}_${toFileSafeKey(normalizedPrompt)}.mp3`;
+    const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
+    const fileName = `bgm_${mode}${tagged}_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const legacyFileName = `bgm_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, [fileName, legacyFileName]);
     if (existing) {
@@ -593,7 +632,8 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
     const options = normalizeBossOptions(optionsOrTheme);
     const normalizedText = normalizeNarratorText(text);
     const theme = normalizeTheme(options.theme);
-    const cacheKey = `tts:${theme}:${normalizedText}:${options.voiceStyle || ''}:${options.voiceGender || ''}:${options.voiceAccent || ''}`;
+    const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
+    const cacheKey = `tts:${theme}:${normalizedText}:${options.voiceStyle || ''}:${options.voiceGender || ''}:${options.voiceAccent || ''}${cacheTag}`;
 
     if (audioCache.has(cacheKey)) {
         return audioCache.get(cacheKey)!;
@@ -603,7 +643,8 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
         return pendingRequests.get(cacheKey)!;
     }
 
-    const fileName = `tts_boss_${toFileSafeKey(normalizedText)}.mp3`;
+    const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
+    const fileName = `tts_boss${tagged}_${toFileSafeKey(normalizedText)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, fileName);
     if (existing) {
         return existing;
@@ -749,4 +790,301 @@ export async function preloadRunAudio(runData: RunData): Promise<void> {
         }));
     }
     Promise.all(backgroundPromises).catch(e => console.error('Error in background audio preload', e));
+}
+
+export async function preloadEssentialAudio(runData: RunData | RunDataV2): Promise<void> {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (apiKey) {
+        maybeWarmUpElevenLabsCatalogs(apiKey);
+    }
+
+    const cards = runData.cards.slice(0, 3);
+    const firstEnemy = runData.enemies[0];
+    const firstNode = isRunDataV2(runData)
+        ? runData.node_map.find(node => node.row === 0 && node.type === 'Combat') || runData.node_map.find(node => node.type === 'Combat')
+        : undefined;
+    const firstPayload = (isRunDataV2(runData) && firstNode)
+        ? runData.rooms[firstNode.id]?.payload
+        : undefined;
+    const refs = firstPayload?.objectRefs;
+    const promises: Promise<void>[] = [];
+
+    const preloadMusicWithState = async (
+        prompt: string | undefined,
+        objectId: string | undefined,
+        mode: 'room' | 'boss',
+        onReady?: (url: string) => void,
+    ) => {
+        if (!prompt) return;
+        try {
+            const url = await generateMusic(prompt, {
+                theme: runData.theme,
+                mode,
+                cacheTag: objectId,
+                fileTag: objectId,
+            });
+            if (url) {
+                markManifestReady(runData, objectId, url);
+                if (onReady) onReady(url);
+            }
+        } catch (err) {
+            markManifestFailed(runData, objectId, err);
+        }
+    };
+
+    const preloadSfxWithState = async (
+        prompt: string | undefined,
+        objectId: string | undefined,
+        source: 'card' | 'enemy' | 'boss',
+        onReady?: (url: string) => void,
+    ) => {
+        if (!prompt) return;
+        try {
+            const url = await generateSoundEffect(prompt, {
+                theme: runData.theme,
+                source,
+                cacheTag: objectId,
+                fileTag: objectId,
+            });
+            if (url) {
+                markManifestReady(runData, objectId, url);
+                if (onReady) onReady(url);
+            }
+        } catch (err) {
+            markManifestFailed(runData, objectId, err);
+        }
+    };
+
+    if (runData.roomMusicPrompt) {
+        promises.push(preloadMusicWithState(runData.roomMusicPrompt, refs?.roomMusicId, 'room', (url) => {
+            if (firstPayload && (firstPayload.nodeType === 'Combat' || firstPayload.nodeType === 'Elite')) {
+                firstPayload.roomMusicUrl = url;
+                firstPayload.objectUrls = { ...(firstPayload.objectUrls || {}), roomMusicUrl: url };
+            }
+        }));
+    }
+
+    cards.forEach((card, idx) => {
+        promises.push(preloadSfxWithState(
+            card.audioPrompt,
+            card.audioObjectId || refs?.cardSfxIds?.[idx],
+            'card',
+            (url) => {
+                card.audioUrl = url;
+                if (firstPayload) {
+                    const cardSfxUrls = [...(firstPayload.objectUrls?.cardSfxUrls || [])];
+                    cardSfxUrls[idx] = url;
+                    firstPayload.objectUrls = { ...(firstPayload.objectUrls || {}), cardSfxUrls };
+                }
+            }
+        ));
+    });
+
+    promises.push(preloadSfxWithState(
+        firstEnemy?.audioPrompt,
+        firstEnemy?.audioObjectId || refs?.enemySfxIds?.[0] || refs?.enemySfxId,
+        'enemy',
+        (url) => {
+            if (firstEnemy) firstEnemy.audioUrl = url;
+            if (firstPayload) {
+                const enemySfxUrls = [...(firstPayload.objectUrls?.enemySfxUrls || [])];
+                enemySfxUrls[0] = url;
+                firstPayload.objectUrls = {
+                    ...(firstPayload.objectUrls || {}),
+                    enemySfxUrl: url,
+                    enemySfxUrls,
+                };
+            }
+        }
+    ));
+
+    await Promise.all(promises);
+}
+
+export async function preloadRoomAudio(runData: RunDataV2, roomId: string, payload: RoomContentPayload): Promise<void> {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (apiKey) {
+        maybeWarmUpElevenLabsCatalogs(apiKey);
+    }
+
+    const promises: Promise<void>[] = [];
+
+    const preloadMusicWithState = async (
+        prompt: string | undefined,
+        objectId: string | undefined,
+        mode: 'room' | 'boss',
+        onReady?: (url: string) => void,
+    ) => {
+        if (!prompt) return;
+        try {
+            const url = await generateMusic(prompt, {
+                theme: runData.theme,
+                mode,
+                cacheTag: objectId,
+                fileTag: objectId,
+            });
+            if (url) {
+                markManifestReady(runData, objectId, url);
+                if (onReady) onReady(url);
+            }
+        } catch (err) {
+            console.error(`Failed to preload room music (${roomId}):`, err);
+            markManifestFailed(runData, objectId, err);
+        }
+    };
+
+    const preloadSfxWithState = async (
+        prompt: string | undefined,
+        objectId: string | undefined,
+        source: 'card' | 'enemy' | 'boss',
+        onReady?: (url: string) => void,
+    ) => {
+        if (!prompt) return;
+        try {
+            const url = await generateSoundEffect(prompt, {
+                theme: runData.theme,
+                source,
+                cacheTag: objectId,
+                fileTag: objectId,
+            });
+            if (url) {
+                markManifestReady(runData, objectId, url);
+                if (onReady) onReady(url);
+            }
+        } catch (err) {
+            console.error(`Failed to preload room SFX (${roomId}):`, err);
+            markManifestFailed(runData, objectId, err);
+        }
+    };
+
+    if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
+        if (payload.roomMusicPrompt || runData.roomMusicPrompt) {
+            promises.push(preloadMusicWithState(
+                payload.roomMusicPrompt || runData.roomMusicPrompt || '',
+                payload.objectRefs?.roomMusicId,
+                'room',
+                (url) => {
+                    payload.roomMusicUrl = url;
+                    payload.objectUrls = { ...(payload.objectUrls || {}), roomMusicUrl: url };
+                }
+            ));
+        }
+        payload.enemies.forEach((enemy, idx) => {
+            if (enemy.audioPrompt) {
+                promises.push(preloadSfxWithState(
+                    enemy.audioPrompt,
+                    enemy.audioObjectId || payload.objectRefs?.enemySfxIds?.[idx],
+                    payload.nodeType === 'Elite' ? 'boss' : 'enemy',
+                    (url) => {
+                        enemy.audioUrl = url;
+                        const enemySfxUrls = [...(payload.objectUrls?.enemySfxUrls || [])];
+                        enemySfxUrls[idx] = url;
+                        payload.objectUrls = { ...(payload.objectUrls || {}), enemySfxUrls };
+                    }
+                ));
+            }
+        });
+        (payload.rewardCards || []).forEach((card, idx) => {
+            if (card.audioPrompt) {
+                promises.push(preloadSfxWithState(
+                    card.audioPrompt,
+                    card.audioObjectId || payload.objectRefs?.cardSfxIds?.[idx],
+                    'card',
+                    (url) => {
+                        card.audioUrl = url;
+                        const cardSfxUrls = [...(payload.objectUrls?.cardSfxUrls || [])];
+                        cardSfxUrls[idx] = url;
+                        payload.objectUrls = { ...(payload.objectUrls || {}), cardSfxUrls };
+                    }
+                ));
+            }
+        });
+    }
+
+    if (payload.nodeType === 'Boss') {
+        if (payload.bossMusicPrompt || runData.bossMusicPrompt) {
+            promises.push(preloadMusicWithState(
+                payload.bossMusicPrompt || runData.bossMusicPrompt || '',
+                payload.objectRefs?.bossMusicId,
+                'boss',
+                (url) => {
+                    payload.bossMusicUrl = url;
+                    payload.objectUrls = { ...(payload.objectUrls || {}), bossMusicUrl: url };
+                }
+            ));
+        }
+        if (payload.boss?.audioPrompt) {
+            promises.push(preloadSfxWithState(
+                payload.boss.audioPrompt,
+                payload.boss.audioObjectId || payload.objectRefs?.bossSfxId,
+                'boss',
+                (url) => {
+                    payload.boss.audioUrl = url;
+                    payload.objectUrls = { ...(payload.objectUrls || {}), bossSfxUrl: url };
+                }
+            ));
+        }
+        if (payload.boss?.narratorText) {
+            promises.push((async () => {
+                try {
+                    const objectId = payload.boss.narratorAudioObjectId || payload.objectRefs?.bossTtsId;
+                    const url = await generateBossTTS(payload.boss.narratorText, {
+                        theme: runData.theme,
+                        voiceStyle: payload.boss.narratorVoiceStyle,
+                        voiceGender: payload.boss.narratorVoiceGender,
+                        voiceAccent: payload.boss.narratorVoiceAccent,
+                        cacheTag: objectId,
+                        fileTag: objectId,
+                    });
+                    if (url) {
+                        payload.boss.narratorAudioUrl = url;
+                        payload.objectUrls = { ...(payload.objectUrls || {}), bossTtsUrl: url };
+                        markManifestReady(runData, objectId, url);
+                    }
+                } catch (err) {
+                    markManifestFailed(runData, payload.boss.narratorAudioObjectId || payload.objectRefs?.bossTtsId, err);
+                }
+            })());
+        }
+    }
+
+    if (payload.nodeType === 'Shop') {
+        payload.shopCards.forEach((card, idx) => {
+            if (card.audioPrompt) {
+                promises.push(preloadSfxWithState(
+                    card.audioPrompt,
+                    card.audioObjectId || payload.objectRefs?.cardSfxIds?.[idx],
+                    'card',
+                    (url) => {
+                        card.audioUrl = url;
+                        const cardSfxUrls = [...(payload.objectUrls?.cardSfxUrls || [])];
+                        cardSfxUrls[idx] = url;
+                        payload.objectUrls = { ...(payload.objectUrls || {}), cardSfxUrls };
+                    }
+                ));
+            }
+        });
+    }
+
+    if (payload.nodeType === 'Event') {
+        payload.choices.forEach((choice, idx) => {
+            const card = choice.effects?.addCard;
+            if (card?.audioPrompt) {
+                promises.push(preloadSfxWithState(
+                    card.audioPrompt,
+                    card.audioObjectId || payload.objectRefs?.cardSfxIds?.[idx],
+                    'card',
+                    (url) => {
+                        card.audioUrl = url;
+                        const cardSfxUrls = [...(payload.objectUrls?.cardSfxUrls || [])];
+                        cardSfxUrls[idx] = url;
+                        payload.objectUrls = { ...(payload.objectUrls || {}), cardSfxUrls };
+                    }
+                ));
+            }
+        });
+    }
+
+    if (promises.length === 0) return;
+    await Promise.all(promises);
 }

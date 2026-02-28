@@ -1,5 +1,17 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { RunData, MapNode, Card, Enemy, Boss, Relic } from '../../../shared/types/game';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import {
+  RunData,
+  RunDataV2,
+  MapNode,
+  Card,
+  Enemy,
+  Boss,
+  Relic,
+  RoomContentPayload,
+  EventRoomContent,
+  ShopRoomContent,
+  isRunDataV2,
+} from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
 import { CombatArena, CombatVictorySummary } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
@@ -9,6 +21,8 @@ import { ShopScreen } from './ShopScreen';
 import { CardUpgradeScreen } from './CardUpgradeScreen';
 import { PlayerHUD } from './PlayerHUD';
 import { GameImage } from '../GameImage';
+import { saveRunSnapshot } from '../../services/geminiService';
+import { RoomGenerationOrchestrator } from '../../services/roomGenerationOrchestrator';
 
 interface RunManagerProps {
   runData: RunData;
@@ -47,6 +61,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     return normalized === 'strike' || normalized === 'defend';
   };
 
+  const [activeRunData, setActiveRunData] = useState<RunData>(runData);
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
@@ -66,24 +81,85 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [playerMaxHp, setPlayerMaxHp] = useState(50);
   const [gold, setGold] = useState(100);
   const [relics, setRelics] = useState<Relic[]>([]);
-  const [currentEnemy, setCurrentEnemy] = useState<Enemy | Boss | null>(null);
+  const [currentEnemies, setCurrentEnemies] = useState<(Enemy | Boss)[]>([]);
   const [campfireAction, setCampfireAction] = useState<'choosing' | 'smithing'>('choosing');
   const [rewardCards, setRewardCards] = useState<Card[]>([]);
   const [rewardStats, setRewardStats] = useState<RewardStats | null>(null);
+  const [roomGate, setRoomGate] = useState<{
+    node: MapNode | null;
+    status: 'loading' | 'failed';
+    message: string;
+  } | null>(null);
+  const runDataRef = useRef<RunDataV2 | null>(null);
+  const orchestratorRef = useRef<RoomGenerationOrchestrator | null>(null);
+
+  const isV2 = useMemo(() => isRunDataV2(activeRunData), [activeRunData]);
+
+  const updateRunDataV2 = useCallback((updater: (prev: RunDataV2) => RunDataV2) => {
+    setActiveRunData(prev => {
+      if (!isRunDataV2(prev)) return prev;
+      const next = updater(prev);
+      runDataRef.current = next;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
-    if (runData.node_map) {
-      setNodes(runData.node_map.map(node => ({
-        ...node,
-        nextNodes: node.nextNodes ?? [],
-        completed: Boolean(node.completed),
-      })));
+    setActiveRunData(runData);
+    if (isRunDataV2(runData)) {
+      runDataRef.current = runData;
     } else {
-      setNodes(generateFallbackNodeMap(runData));
+      runDataRef.current = null;
     }
+  }, [runData]);
+
+  useEffect(() => {
+    if (isRunDataV2(activeRunData)) {
+      runDataRef.current = activeRunData;
+    }
+
+    if (activeRunData.node_map) {
+      setNodes(prevNodes => {
+        const prevCompleted = new Map(prevNodes.map(node => [node.id, node.completed]));
+        return activeRunData.node_map.map(node => ({
+          ...node,
+          nextNodes: node.nextNodes ?? [],
+          completed: prevCompleted.get(node.id) ?? Boolean(node.completed),
+        }));
+      });
+    } else {
+      setNodes(generateFallbackNodeMap(activeRunData));
+    }
+  }, [activeRunData.node_map, activeRunData.theme]);
+
+  useEffect(() => {
     setRewardCards([]);
     setRewardStats(null);
   }, [runData]);
+
+  useEffect(() => {
+    if (!isRunDataV2(runData)) {
+      orchestratorRef.current?.dispose();
+      orchestratorRef.current = null;
+      return;
+    }
+
+    const orchestrator = new RoomGenerationOrchestrator({
+      getRunData: () => runDataRef.current || runData,
+      setRunData: (updater) => updateRunDataV2(updater),
+      maxConcurrent: 2,
+    });
+    orchestratorRef.current = orchestrator;
+    return () => {
+      orchestrator.dispose();
+      orchestratorRef.current = null;
+    };
+  }, [runData, updateRunDataV2]);
+
+  useEffect(() => {
+    if (!isRunDataV2(activeRunData)) return;
+    void saveRunSnapshot(activeRunData);
+  }, [activeRunData]);
 
   const totalFloors = useMemo(() => {
     if (nodes.length === 0) return 1;
@@ -97,8 +173,8 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const currentFloor = useMemo(() => calculateCurrentFloor(nodes, totalFloors), [nodes, totalFloors]);
 
   const getRewardSource = (): Card[] => {
-    const rewardPool = runData.cards.filter(card => !isBasicStarterCard(card));
-    return rewardPool.length > 0 ? rewardPool : runData.cards;
+    const rewardPool = activeRunData.cards.filter(card => !isBasicStarterCard(card));
+    return rewardPool.length > 0 ? rewardPool : activeRunData.cards;
   };
 
   const getRandomRewardCards = (): Card[] => {
@@ -114,29 +190,78 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   };
 
   const availableCards = useMemo(() => {
-    return runData.cards.filter(c => !isBasicStarterCard(c));
-  }, [runData.cards]);
+    return activeRunData.cards.filter(c => !isBasicStarterCard(c));
+  }, [activeRunData.cards]);
 
   // ── Node Selection ──
 
-  const handleNodeSelect = (node: MapNode) => {
+  const getRoomPayload = useCallback((roomId: string | null): RoomContentPayload | undefined => {
+    if (!roomId) return undefined;
+    const source = runDataRef.current;
+    if (!source) return undefined;
+    return source.rooms[roomId]?.payload;
+  }, [activeRunData]);
+
+  const resolveNodeEnemies = useCallback((node: MapNode, ensuredPayload?: RoomContentPayload): (Enemy | Boss)[] => {
+    const payload = ensuredPayload || getRoomPayload(node.id);
+    if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite')) return payload.enemies;
+    if (payload && payload.nodeType === 'Boss') return [payload.boss];
+    if (node.data) {
+      // node.data is now an array of enemies for combat/elite nodes
+      if (Array.isArray(node.data)) return node.data;
+      return [node.data];
+    }
+    if (node.type === 'Elite') {
+      return [{
+        id: 'elite-1',
+        name: 'Corrupted Guardian',
+        maxHp: 55,
+        currentHp: 55,
+        description: 'A powerful elite foe.',
+        intents: [{ type: 'Attack', value: 12, description: 'Deals 12 damage.' }, { type: 'Defend', value: 10, description: 'Gains 10 block.' }]
+      }];
+    }
+    return [];
+  }, [getRoomPayload]);
+
+  const ensureNodeReady = useCallback(async (node: MapNode): Promise<RoomContentPayload | null | false> => {
+    if (!isRunDataV2(activeRunData)) return null;
+
+    const orchestrator = orchestratorRef.current;
+    if (!orchestrator) return null;
+
+    const strictMode = activeRunData.generationSettings.mode === 'test_on_demand';
+    const criticalCombatNode = node.type === 'Combat' || node.type === 'Elite' || node.type === 'Boss';
+    const shouldGate = strictMode || criticalCombatNode;
+
+    if (shouldGate) {
+      setRoomGate({ node, status: 'loading', message: 'Generating room content...' });
+    }
+
+    const payload = await orchestrator.ensureRoomReady(node);
+    if (payload) {
+      setRoomGate(null);
+      return payload;
+    }
+
+    if (shouldGate) {
+      setRoomGate({ node, status: 'failed', message: 'Room generation failed. Retry to continue.' });
+      return false;
+    }
+
+    return null;
+  }, [activeRunData]);
+
+  const handleNodeSelect = async (node: MapNode) => {
+    const ensuredPayload = await ensureNodeReady(node);
+    if (ensuredPayload === false) return;
+
     setCurrentNodeId(node.id);
     switch (node.type) {
       case 'Combat':
       case 'Elite':
       case 'Boss':
-        if (node.type === 'Elite' && !node.data) {
-          setCurrentEnemy({
-            id: 'elite-1',
-            name: 'Corrupted Guardian',
-            maxHp: 80,
-            currentHp: 80,
-            description: 'A powerful elite foe.',
-            intents: [{ type: 'Attack', value: 15, description: 'Deals 15 damage.' }, { type: 'Defend', value: 12, description: 'Gains 12 block.' }]
-          });
-        } else {
-          setCurrentEnemy(node.data);
-        }
+        setCurrentEnemies(resolveNodeEnemies(node, ensuredPayload || undefined));
         setView('combat');
         break;
       case 'Event':
@@ -157,8 +282,18 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   // ── Completion Helpers ──
 
+  const persistNodeCompletionIfV2 = (nodeId: string, completed: boolean) => {
+    if (!isRunDataV2(activeRunData)) return;
+    updateRunDataV2(prev => ({
+      ...prev,
+      node_map: prev.node_map.map(node => node.id === nodeId ? { ...node, completed } : node),
+    }));
+  };
+
   const markNodeCompleted = () => {
+    if (!currentNodeId) return;
     setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
+    persistNodeCompletionIfV2(currentNodeId, true);
   };
 
   const returnToMap = () => {
@@ -176,13 +311,21 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     setPlayerHp(summary.hp);
     setPlayerMaxHp(summary.maxHp);
     setNodes(updatedNodes);
+    if (currentNodeId) {
+      persistNodeCompletionIfV2(currentNodeId, true);
+    }
 
-    if (currentEnemy?.id === runData.boss.id) {
+    const activeBossId = isRunDataV2(activeRunData) ? activeRunData.boss?.id : activeRunData.boss.id;
+    if (activeBossId && currentEnemies.some(e => e.id === activeBossId)) {
       alert('Victory!');
       onReset();
     } else {
       const nextGold = gold + 25;
-      const nextRewardCards = getRandomRewardCards();
+      let nextRewardCards = getRandomRewardCards();
+      const payload = getRoomPayload(currentNodeId);
+      if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') && payload.rewardCards && payload.rewardCards.length > 0) {
+        nextRewardCards = payload.rewardCards.slice(0, 3);
+      }
       const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
 
       setGold(nextGold);
@@ -286,29 +429,82 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     returnToMap();
   };
 
+  useEffect(() => {
+    if (!isRunDataV2(activeRunData)) return;
+    if (activeRunData.generationSettings.mode !== 'fast_start') return;
+    if (!orchestratorRef.current) return;
+    const depth = Math.max(1, activeRunData.generationSettings.prefetchDepth ?? 2);
+    orchestratorRef.current.prefetchFrom(currentNodeId, nodes, depth);
+  }, [activeRunData, currentNodeId, nodes]);
+
+  const currentRoomPayload = getRoomPayload(currentNodeId);
+  const currentEventPayload: EventRoomContent | null =
+    currentRoomPayload && currentRoomPayload.nodeType === 'Event' ? currentRoomPayload : null;
+  const currentShopPayload: ShopRoomContent | null =
+    currentRoomPayload && currentRoomPayload.nodeType === 'Shop' ? currentRoomPayload : null;
+
+  const renderWithRoomGate = (content: React.ReactNode) => (
+    <>
+      {content}
+      {roomGate && (
+        <div className="fixed inset-0 z-[120] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900/95 p-6 text-white">
+            <h3 className="text-2xl font-bold mb-2">Room Generation</h3>
+            <p className="text-slate-300 mb-5">{roomGate.message}</p>
+            {roomGate.status === 'loading' ? (
+              <div className="flex items-center gap-3 text-orange-300">
+                <span className="h-5 w-5 rounded-full border-2 border-orange-300 border-b-transparent animate-spin" />
+                <span>Preparing room assets and data...</span>
+              </div>
+            ) : (
+              <div className="flex gap-3">
+                <button
+                  className="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-400 text-slate-950 font-semibold"
+                  onClick={() => roomGate.node && void ensureNodeReady(roomGate.node)}
+                >
+                  Retry
+                </button>
+                <button
+                  className="px-4 py-2 rounded-lg bg-slate-700 hover:bg-slate-600"
+                  onClick={() => {
+                    setRoomGate(null);
+                    setView('map');
+                  }}
+                >
+                  Back to Map
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   // ── Render ──
 
   if (view === 'map') {
-    return (
+    return renderWithRoomGate(
       <NodeMap
         nodes={nodes}
         currentNodeId={currentNodeId}
-        onNodeSelect={handleNodeSelect}
+        onNodeSelect={(node) => { void handleNodeSelect(node); }}
         playerHp={playerHp}
         playerMaxHp={playerMaxHp}
         gold={gold}
-        bossName={runData.boss.name}
+        bossName={(isRunDataV2(activeRunData) ? activeRunData.boss?.name : activeRunData.boss.name) || 'Boss'}
         totalFloors={totalFloors}
       />
     );
   }
 
-  if (view === 'combat' && currentEnemy) {
-    return (
+  if (view === 'combat' && currentEnemies.length > 0) {
+    return renderWithRoomGate(
       <CombatArena
-        runData={runData}
+        runData={activeRunData}
         deck={deck}
-        enemy={currentEnemy}
+        enemies={currentEnemies}
+        roomContent={currentRoomPayload || null}
         playerHp={playerHp}
         playerMaxHp={playerMaxHp}
         onVictory={handleCombatVictory}
@@ -330,7 +526,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       gold,
     };
 
-    return (
+    return renderWithRoomGate(
       <CardReward
         cards={cardsToShow}
         onSelect={handleCardSelect}
@@ -341,7 +537,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'event') {
-    return (
+    return renderWithRoomGate(
       <EventScreen
         playerHp={playerHp}
         playerMaxHp={playerMaxHp}
@@ -349,13 +545,14 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
         currentFloor={currentFloor}
         totalFloors={totalFloors}
         availableCards={availableCards}
+        roomEvent={currentEventPayload}
         onComplete={handleEventComplete}
       />
     );
   }
 
   if (view === 'shop') {
-    return (
+    return renderWithRoomGate(
       <ShopScreen
         playerHp={playerHp}
         playerMaxHp={playerMaxHp}
@@ -364,6 +561,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
         totalFloors={totalFloors}
         deck={deck}
         availableCards={availableCards}
+        roomShop={currentShopPayload}
         ownedRelics={relics}
         onBuyCard={handleBuyCard}
         onBuyRelic={handleBuyRelic}

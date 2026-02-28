@@ -2,7 +2,7 @@ import { GameState, Card, Enemy, Boss, Synergy } from '../../shared/types/game';
 import { drawCards, shuffle } from './deckManager';
 import { getNextIntent } from './enemyAI';
 
-export function initializeCombat(deck: Card[], enemy: Enemy | Boss): GameState {
+export function initializeCombat(deck: Card[], enemies: (Enemy | Boss)[]): GameState {
   const initialDrawPile = shuffle(deck);
   const { drawn, newDrawPile, newDiscardPile } = drawCards(initialDrawPile, [], 5);
 
@@ -16,7 +16,7 @@ export function initializeCombat(deck: Card[], enemy: Enemy | Boss): GameState {
     drawPile: newDrawPile,
     discardPile: newDiscardPile,
     exhaustPile: [],
-    currentEnemy: enemy,
+    enemies,
     turn: 1,
     tagsPlayedThisTurn: {},
     statusEffects: {}
@@ -24,18 +24,21 @@ export function initializeCombat(deck: Card[], enemy: Enemy | Boss): GameState {
 }
 
 export function endTurn(state: GameState): GameState {
-  let newState = { ...state };
+  let newState: GameState = { ...state, enemies: state.enemies.map(e => ({ ...e })) };
 
-  // Enemy turn
-  if (newState.currentEnemy) {
-    const intent = getNextIntent(newState.currentEnemy, newState.turn);
+  // Each living enemy acts
+  for (let i = 0; i < newState.enemies.length; i++) {
+    const enemy = newState.enemies[i];
+    if (enemy.currentHp <= 0) continue;
+
+    const intent = getNextIntent(enemy, newState.turn);
 
     // Damage phase
     if (['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff'].includes(intent.type)) {
       let dmg = intent.value;
 
-      if (newState.currentEnemy.statusEffects?.['Strength']) {
-        dmg += newState.currentEnemy.statusEffects['Strength'];
+      if (enemy.statusEffects?.['Strength']) {
+        dmg += enemy.statusEffects['Strength'];
       }
 
       if (newState.statusEffects['Vulnerable']) {
@@ -59,11 +62,11 @@ export function endTurn(state: GameState): GameState {
     if (['Defend', 'AttackDefend'].includes(intent.type)) {
       const blockAmt = intent.type === 'AttackDefend' ? (intent.secondaryValue || 0) : intent.value;
       if (blockAmt > 0) {
-        newState.currentEnemy = {
-          ...newState.currentEnemy,
+        newState.enemies[i] = {
+          ...newState.enemies[i],
           statusEffects: {
-            ...(newState.currentEnemy.statusEffects || {}),
-            'Block': (newState.currentEnemy.statusEffects?.['Block'] || 0) + blockAmt
+            ...(newState.enemies[i].statusEffects || {}),
+            'Block': (newState.enemies[i].statusEffects?.['Block'] || 0) + blockAmt
           }
         };
       }
@@ -81,11 +84,11 @@ export function endTurn(state: GameState): GameState {
     if (['Buff', 'AttackBuff'].includes(intent.type)) {
       const buffAmt = intent.type === 'AttackBuff' ? (intent.secondaryValue || 0) : intent.value;
       if (buffAmt > 0) {
-        newState.currentEnemy = {
-          ...newState.currentEnemy,
+        newState.enemies[i] = {
+          ...newState.enemies[i],
           statusEffects: {
-            ...(newState.currentEnemy.statusEffects || {}),
-            'Strength': (newState.currentEnemy.statusEffects?.['Strength'] || 0) + buffAmt
+            ...(newState.enemies[i].statusEffects || {}),
+            'Strength': (newState.enemies[i].statusEffects?.['Strength'] || 0) + buffAmt
           }
         };
       }
@@ -110,8 +113,19 @@ export function endTurn(state: GameState): GameState {
   if (newState.statusEffects['Vulnerable']) {
     newState.statusEffects['Vulnerable'] -= 1;
   }
-  if (newState.currentEnemy && newState.currentEnemy.statusEffects?.['Vulnerable']) {
-    newState.currentEnemy.statusEffects['Vulnerable'] -= 1;
+
+  // Tick down vulnerable on each living enemy
+  for (let i = 0; i < newState.enemies.length; i++) {
+    if (newState.enemies[i].currentHp <= 0) continue;
+    if (newState.enemies[i].statusEffects?.['Vulnerable']) {
+      newState.enemies[i] = {
+        ...newState.enemies[i],
+        statusEffects: {
+          ...newState.enemies[i].statusEffects,
+          'Vulnerable': (newState.enemies[i].statusEffects?.['Vulnerable'] || 0) - 1,
+        },
+      };
+    }
   }
 
   return newState;

@@ -3,9 +3,14 @@ import {
   Boss,
   Card,
   Enemy,
+  GeneratedObjectManifestEntry,
+  ImageObjectType,
+  Intent,
   GenerationSettings,
   isRunDataV2,
   MapNode,
+  MusicModeType,
+  AudioSourceType,
   RoomContentPayload,
   RunData,
   RunDataLegacy,
@@ -25,6 +30,9 @@ const RUN_DATA_MAX_ATTEMPTS = 3;
 
 let currentRunId = '';
 
+const GLOBAL_ROOM_ID = 'global';
+export const PLAYER_PORTRAIT_PROMPT = 'A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up';
+
 export function getCurrentRunId(): string {
   return currentRunId;
 }
@@ -39,6 +47,97 @@ function toFileSafeKey(input: string): string {
 
 function nowTs(): number {
   return Date.now();
+}
+
+function buildObjectId(roomId: string, kind: 'image' | 'audio', slot: string): string {
+  return `${roomId}:${kind}:${toFileSafeKey(slot)}`;
+}
+
+function buildObjectFileKey(objectId: string): string {
+  return toFileSafeKey(objectId).substring(0, 80);
+}
+
+export function buildPlayerSpritePrompt(theme: string): string {
+  return `A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${theme} theme`;
+}
+
+export function buildEnemySpritePrompt(enemyPrompt: string): string {
+  return `A character sprite of ${enemyPrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
+}
+
+export function buildBossSpritePrompt(bossPrompt: string): string {
+  return `A character sprite of ${bossPrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`;
+}
+
+function createManifestEntry(params: {
+  id: string;
+  roomId?: string;
+  kind: 'image' | 'audio';
+  prompt: string;
+  fileKey?: string;
+  imageType?: ImageObjectType;
+  audioSource?: AudioSourceType;
+  musicMode?: MusicModeType;
+}): GeneratedObjectManifestEntry {
+  const ts = nowTs();
+  return {
+    id: params.id,
+    roomId: params.roomId,
+    kind: params.kind,
+    prompt: params.prompt,
+    status: 'pending',
+    fileKey: params.fileKey || buildObjectFileKey(params.id),
+    imageType: params.imageType,
+    audioSource: params.audioSource,
+    musicMode: params.musicMode,
+    createdAt: ts,
+    updatedAt: ts,
+  };
+}
+
+function ensureManifestEntry(
+  manifest: Record<string, GeneratedObjectManifestEntry>,
+  params: Parameters<typeof createManifestEntry>[0]
+): GeneratedObjectManifestEntry {
+  const existing = manifest[params.id];
+  if (existing) {
+    return existing;
+  }
+  const created = createManifestEntry(params);
+  manifest[params.id] = created;
+  return created;
+}
+
+function markManifestReady(runData: RunData | RunDataV2, objectId: string | undefined, url: string | undefined) {
+  if (!objectId || !url || !isRunDataV2(runData)) return;
+  const existing = runData.objectManifest[objectId];
+  if (!existing) return;
+  runData.objectManifest[objectId] = {
+    ...existing,
+    status: 'ready',
+    url,
+    error: undefined,
+    updatedAt: nowTs(),
+  };
+}
+
+function markManifestFailed(runData: RunData | RunDataV2, objectId: string | undefined, error: unknown) {
+  if (!objectId || !isRunDataV2(runData)) return;
+  const existing = runData.objectManifest[objectId];
+  if (!existing) return;
+  runData.objectManifest[objectId] = {
+    ...existing,
+    status: 'failed',
+    error: errorToMessage(error),
+    updatedAt: nowTs(),
+  };
+}
+
+export function resolveManifestObjectUrl(runData: RunData | RunDataV2 | null | undefined, objectId?: string): string | undefined {
+  if (!runData || !objectId || !isRunDataV2(runData)) return undefined;
+  const entry = runData.objectManifest[objectId];
+  if (!entry || entry.status !== 'ready' || !entry.url) return undefined;
+  return entry.url;
 }
 
 export async function saveRunSnapshot(runData: RunData): Promise<void> {
@@ -406,23 +505,22 @@ export async function generateGameImage(
   return request;
 }
 
-function stripDirectionFromPrompt(prompt: string): string {
-  return prompt.replace(/facing right|looking right/gi, '').replace(/\s{2,}/g, ' ').trim();
-}
-
 export async function preloadFirstCombatImages(runData: RunData): Promise<void> {
   const promises: Promise<string>[] = [];
 
   // Background
-  promises.push(generateGameImage(`A scenic, atmospheric background for a fantasy battle, ${runData.theme} theme, featuring a very wide and prominent flat floor covering the bottom third of the image, 2D digital art`, 'background').catch(e => { console.error('Failed to preload background', e); return ''; }));
+  promises.push(generateGameImage(buildDefaultBattleBackgroundPrompt(runData.theme), 'background').catch(e => { console.error('Failed to preload background', e); return ''; }));
 
   // Player portrait and sprite
-  promises.push(generateGameImage(`A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up`, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
-  promises.push(generateGameImage(`A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`, 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
+  promises.push(generateGameImage(PLAYER_PORTRAIT_PROMPT, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
+  promises.push(generateGameImage(buildPlayerSpritePrompt(runData.theme), 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
 
   // First enemy sprite
   if (runData.enemies.length > 0 && runData.enemies[0].imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(runData.enemies[0].imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
+    promises.push(generateGameImage(buildEnemySpritePrompt(runData.enemies[0].imagePrompt), 'character').then(url => {
+      runData.enemies[0].imageUrl = url;
+      return url;
+    }).catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
   }
 
   // All starting cards
@@ -442,13 +540,19 @@ export async function preloadBackgroundImages(runData: RunData): Promise<void> {
   for (let i = 1; i < runData.enemies.length; i++) {
     const enemy = runData.enemies[i];
     if (enemy.imagePrompt) {
-      promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(enemy.imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
+      promises.push(generateGameImage(buildEnemySpritePrompt(enemy.imagePrompt), 'character').then(url => {
+        enemy.imageUrl = url;
+        return url;
+      }).catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
     }
   }
 
   // Boss
   if (runData.boss && runData.boss.imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(runData.boss.imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
+    promises.push(generateGameImage(buildBossSpritePrompt(runData.boss.imagePrompt), 'character').then(url => {
+      runData.boss.imageUrl = url;
+      return url;
+    }).catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
   }
 
   // We don't await this intentionally so it runs in the background
@@ -595,11 +699,7 @@ async function requestStructuredJson<T>(
   return parsed;
 }
 
-function stripDirectionFromPromptSafe(prompt?: string): string {
-  return (prompt || '').replace(/facing right|looking right/gi, '').replace(/\s{2,}/g, ' ').trim();
-}
-
-function buildDefaultBattleBackgroundPrompt(theme: string): string {
+export function buildDefaultBattleBackgroundPrompt(theme: string): string {
   return `A scenic, atmospheric background for a fantasy battle, ${theme} theme, featuring a very wide and prominent flat floor covering the bottom third of the image, 2D digital art`;
 }
 
@@ -651,12 +751,19 @@ function normalizeCard(card: Partial<Card> | undefined, fallback: Card): Card {
   };
 }
 
-function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string): Enemy {
+function capIntentDamage(intents: Intent[], maxDmg: number): Intent[] {
+  return intents.map(intent => {
+    const needsCap = ['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff'].includes(intent.type);
+    return needsCap ? { ...intent, value: Math.min(intent.value, maxDmg) } : intent;
+  });
+}
+
+function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElite = false): Enemy {
   const fallback: Enemy = {
     id: `enemy_first_${toFileSafeKey(theme)}`,
     name: 'Wandering Sentinel',
-    maxHp: 34,
-    currentHp: 34,
+    maxHp: 28,
+    currentHp: 28,
     description: 'A vigilant foe guarding the first path.',
     intents: [
       { type: 'Attack', value: 6, description: 'Deal 6 damage.' },
@@ -669,15 +776,21 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string): Enemy
 
   if (!enemy) return fallback;
 
+  const maxHpCap = isElite ? 65 : 45;
+  const maxAttackDmg = isElite ? 14 : 10;
+  const rawHp = Math.max(1, Number(enemy.maxHp) || fallback.maxHp);
+  const cappedHp = Math.min(rawHp, maxHpCap);
+  const intents = Array.isArray(enemy.intents) && enemy.intents.length > 0 ? enemy.intents : fallback.intents;
+
   return {
     ...fallback,
     ...enemy,
     id: enemy.id || fallback.id,
     name: enemy.name || fallback.name,
-    maxHp: Math.max(1, Number(enemy.maxHp) || fallback.maxHp),
-    currentHp: Math.max(1, Number(enemy.maxHp) || Number(enemy.currentHp) || fallback.currentHp),
+    maxHp: cappedHp,
+    currentHp: cappedHp,
     description: enemy.description || fallback.description,
-    intents: Array.isArray(enemy.intents) && enemy.intents.length > 0 ? enemy.intents : fallback.intents,
+    intents: capIntentDamage(intents, maxAttackDmg),
     imagePrompt: enemy.imagePrompt || fallback.imagePrompt,
     audioPrompt: enemy.audioPrompt || fallback.audioPrompt,
   };
@@ -699,18 +812,18 @@ function createPlaceholderBoss(theme: string): Boss {
   return {
     id: `boss_placeholder_${toFileSafeKey(theme)}`,
     name: 'The Hidden Tyrant',
-    maxHp: 220,
-    currentHp: 220,
+    maxHp: 110,
+    currentHp: 110,
     description: 'A placeholder boss awaiting full generation.',
     enrageThreshold: 45,
     intents: [
-      { type: 'Attack', value: 18, description: 'Deal 18 damage.' },
-      { type: 'Defend', value: 12, description: 'Gain 12 block.' },
-      { type: 'AttackBuff', value: 14, secondaryValue: 2, description: 'Deal 14 damage and gain 2 Strength.' },
+      { type: 'Attack', value: 12, description: 'Deal 12 damage.' },
+      { type: 'Defend', value: 10, description: 'Gain 10 block.' },
+      { type: 'AttackBuff', value: 10, secondaryValue: 2, description: 'Deal 10 damage and gain 2 Strength.' },
     ],
     phase2Intents: [
-      { type: 'Attack', value: 24, description: 'Deal 24 damage.' },
-      { type: 'AttackDefend', value: 16, secondaryValue: 10, description: 'Deal 16 damage and gain 10 block.' },
+      { type: 'Attack', value: 18, description: 'Deal 18 damage.' },
+      { type: 'AttackDefend', value: 14, secondaryValue: 10, description: 'Deal 14 damage and gain 10 block.' },
     ],
     imagePrompt: `a colossal tyrant in ornate armor, facing left, looking left, side profile, ${theme} style`,
     audioPrompt: 'massive armored stomp with metal resonance',
@@ -738,6 +851,122 @@ function mergeUniqueEnemies(existing: Enemy[], incoming: Enemy[]): Enemy[] {
     if (!byId.has(enemy.id)) byId.set(enemy.id, enemy);
   }
   return Array.from(byId.values());
+}
+
+function registerCardObjects(
+  runData: RunDataV2 | { objectManifest: Record<string, GeneratedObjectManifestEntry> },
+  roomId: string,
+  card: Card,
+  slot: string
+): Card {
+  const imageObjectId = card.imageObjectId || buildObjectId(roomId, 'image', `${slot}_card_${card.id}`);
+  const audioObjectId = card.audioObjectId || buildObjectId(roomId, 'audio', `${slot}_card_${card.id}_sfx`);
+  if (card.imagePrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: imageObjectId,
+      roomId,
+      kind: 'image',
+      prompt: card.imagePrompt,
+      imageType: 'asset',
+      fileKey: buildObjectFileKey(imageObjectId),
+    });
+  }
+  if (card.audioPrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: audioObjectId,
+      roomId,
+      kind: 'audio',
+      prompt: card.audioPrompt,
+      audioSource: 'card',
+      fileKey: buildObjectFileKey(audioObjectId),
+    });
+  }
+  return {
+    ...card,
+    imageObjectId,
+    audioObjectId,
+  };
+}
+
+function registerEnemyObjects(
+  runData: RunDataV2 | { objectManifest: Record<string, GeneratedObjectManifestEntry> },
+  roomId: string,
+  enemy: Enemy,
+  slot: string
+): Enemy {
+  const imageObjectId = enemy.imageObjectId || buildObjectId(roomId, 'image', `${slot}_enemy_${enemy.id}`);
+  const audioObjectId = enemy.audioObjectId || buildObjectId(roomId, 'audio', `${slot}_enemy_${enemy.id}_sfx`);
+  if (enemy.imagePrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: imageObjectId,
+      roomId,
+      kind: 'image',
+      prompt: buildEnemySpritePrompt(enemy.imagePrompt),
+      imageType: 'character',
+      fileKey: buildObjectFileKey(imageObjectId),
+    });
+  }
+  if (enemy.audioPrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: audioObjectId,
+      roomId,
+      kind: 'audio',
+      prompt: enemy.audioPrompt,
+      audioSource: 'enemy',
+      fileKey: buildObjectFileKey(audioObjectId),
+    });
+  }
+  return {
+    ...enemy,
+    imageObjectId,
+    audioObjectId,
+  };
+}
+
+function registerBossObjects(
+  runData: RunDataV2 | { objectManifest: Record<string, GeneratedObjectManifestEntry> },
+  roomId: string,
+  boss: Boss
+): Boss {
+  const imageObjectId = boss.imageObjectId || buildObjectId(roomId, 'image', `boss_${boss.id}`);
+  const audioObjectId = boss.audioObjectId || buildObjectId(roomId, 'audio', `boss_${boss.id}_sfx`);
+  const narratorAudioObjectId = boss.narratorAudioObjectId || buildObjectId(roomId, 'audio', `boss_${boss.id}_tts`);
+  if (boss.imagePrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: imageObjectId,
+      roomId,
+      kind: 'image',
+      prompt: buildBossSpritePrompt(boss.imagePrompt),
+      imageType: 'character',
+      fileKey: buildObjectFileKey(imageObjectId),
+    });
+  }
+  if (boss.audioPrompt) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: audioObjectId,
+      roomId,
+      kind: 'audio',
+      prompt: boss.audioPrompt,
+      audioSource: 'boss',
+      fileKey: buildObjectFileKey(audioObjectId),
+    });
+  }
+  if (boss.narratorText) {
+    ensureManifestEntry(runData.objectManifest, {
+      id: narratorAudioObjectId,
+      roomId,
+      kind: 'audio',
+      prompt: boss.narratorText,
+      audioSource: 'boss',
+      fileKey: buildObjectFileKey(narratorAudioObjectId),
+    });
+  }
+  return {
+    ...boss,
+    imageObjectId,
+    audioObjectId,
+    narratorAudioObjectId,
+  };
 }
 
 export async function generateRunBootstrap(
@@ -847,9 +1076,63 @@ Constraints:
 
   const node_map = generateFallbackNodeMap(legacySeed);
   const firstCombatNode = getFirstCombatNode(node_map);
+  const firstRoomId = firstCombatNode?.id || 'room_start';
+  const objectManifest: Record<string, GeneratedObjectManifestEntry> = {};
+
+  const playerPortraitImageId = buildObjectId(firstRoomId, 'image', 'player_portrait');
+  const playerSpriteImageId = buildObjectId(firstRoomId, 'image', 'player_sprite');
+  const firstRoomBackgroundImageId = buildObjectId(firstRoomId, 'image', 'background');
+  const firstRoomMusicId = buildObjectId(firstRoomId, 'audio', 'room_music');
+
+  ensureManifestEntry(objectManifest, {
+    id: playerPortraitImageId,
+    roomId: GLOBAL_ROOM_ID,
+    kind: 'image',
+    prompt: PLAYER_PORTRAIT_PROMPT,
+    imageType: 'character',
+    fileKey: buildObjectFileKey(playerPortraitImageId),
+  });
+  ensureManifestEntry(objectManifest, {
+    id: playerSpriteImageId,
+    roomId: GLOBAL_ROOM_ID,
+    kind: 'image',
+    prompt: buildPlayerSpritePrompt(theme),
+    imageType: 'character',
+    fileKey: buildObjectFileKey(playerSpriteImageId),
+  });
+  ensureManifestEntry(objectManifest, {
+    id: firstRoomBackgroundImageId,
+    roomId: firstRoomId,
+    kind: 'image',
+    prompt: buildDefaultBattleBackgroundPrompt(theme),
+    imageType: 'background',
+    fileKey: buildObjectFileKey(firstRoomBackgroundImageId),
+  });
+  ensureManifestEntry(objectManifest, {
+    id: firstRoomMusicId,
+    roomId: firstRoomId,
+    kind: 'audio',
+    prompt: roomMusicPrompt,
+    audioSource: 'generic',
+    musicMode: 'room',
+    fileKey: buildObjectFileKey(firstRoomMusicId),
+  });
+
+  const cardsWithObjects = starterCards.map((card, idx) => registerCardObjects(
+    { objectManifest },
+    firstRoomId,
+    card,
+    `starter_${idx}`
+  )) as [Card, Card, Card];
+  const firstEnemyWithObjects = registerEnemyObjects(
+    { objectManifest },
+    firstRoomId,
+    firstEnemy,
+    'room'
+  );
 
   if (firstCombatNode) {
-    firstCombatNode.data = firstEnemy;
+    firstCombatNode.data = firstEnemyWithObjects;
   }
 
   const rooms: RunDataV2['rooms'] = {};
@@ -865,10 +1148,20 @@ Constraints:
     const firstPayload: CombatRoomContent = {
       roomId: firstCombatNode.id,
       nodeType: firstCombatNode.type === 'Elite' ? 'Elite' : 'Combat',
-      enemy: firstEnemy,
-      rewardCards: [uniqueCard],
+      enemies: [firstEnemyWithObjects],
+      rewardCards: [cardsWithObjects[2]],
       backgroundPrompt: buildDefaultBattleBackgroundPrompt(theme),
       roomMusicPrompt,
+      objectRefs: {
+        backgroundImageId: firstRoomBackgroundImageId,
+        playerPortraitImageId,
+        playerSpriteImageId,
+        enemySpriteImageIds: [firstEnemyWithObjects.imageObjectId].filter(Boolean) as string[],
+        cardImageIds: cardsWithObjects.map(card => card.imageObjectId).filter(Boolean) as string[],
+        roomMusicId: firstRoomMusicId,
+        enemySfxIds: [firstEnemyWithObjects.audioObjectId].filter(Boolean) as string[],
+        cardSfxIds: cardsWithObjects.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
     };
     rooms[firstCombatNode.id] = {
       status: 'ready',
@@ -884,13 +1177,14 @@ Constraints:
       prefetchDepth: settings.prefetchDepth ?? 2,
     },
     theme,
-    cards: starterCards,
-    enemies: [firstEnemy],
+    cards: cardsWithObjects,
+    enemies: [firstEnemyWithObjects],
     boss: placeholderBoss,
     synergies: [defaultSynergyFromCard(uniqueCard)],
     node_map,
     roomMusicPrompt,
     bossMusicPrompt: 'ominous low choir with heavy taiko pulse',
+    objectManifest,
     rooms,
     bootstrap,
     gold: 100,
@@ -921,7 +1215,10 @@ async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Pro
     },
   };
 
-  const parts = [{ text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and up to 3 reward cards.` }];
+  const statGuidance = node.type === 'Elite'
+    ? ' Elite enemies should have 35-55 HP and 8-12 attack damage.'
+    : ' Normal enemies should have 20-35 HP and 5-9 attack damage.';
+  const parts = [{ text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and up to 3 reward cards.${statGuidance}` }];
   try {
     const parsed = await requestStructuredJson<{
       enemy: Partial<Enemy>;
@@ -930,49 +1227,157 @@ async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Pro
       roomMusicPrompt?: string;
     }>('generateCombatRoomPayload', config, parts);
 
-    let enemy = normalizeEnemy(parsed.enemy, runData.theme);
-    if (node.type === 'Elite') {
+    const isElite = node.type === 'Elite';
+    const manifestScope = { objectManifest: runData.objectManifest };
+    let enemy = normalizeEnemy(parsed.enemy, runData.theme, isElite);
+    if (isElite) {
+      const eliteHp = Math.min(65, Math.round(enemy.maxHp * 1.4));
       enemy = {
         ...enemy,
         id: `elite_${enemy.id}`,
         name: `Ascended ${enemy.name}`,
-        maxHp: Math.round(enemy.maxHp * 1.5),
-        currentHp: Math.round(enemy.maxHp * 1.5),
+        maxHp: eliteHp,
+        currentHp: eliteHp,
       };
     }
 
+    // For multi-enemy nodes, pick a second enemy from pool with 70% HP
+    const nodeData = node.data;
+    const isMultiEnemy = Array.isArray(nodeData) && nodeData.length > 1;
+    const allEnemies: Enemy[] = [enemy];
+    if (!isElite && isMultiEnemy && runData.enemies.length > 1) {
+      const secondSource = runData.enemies.find(e => e.id !== enemy.id) || runData.enemies[0];
+      const secondHp = Math.max(1, Math.round(secondSource.maxHp * 0.7));
+      allEnemies.push({
+        ...secondSource,
+        id: `${secondSource.id}_dual`,
+        maxHp: secondHp,
+        currentHp: secondHp,
+      });
+    }
+
     const fallbackReward = runData.cards[2] || runData.cards[0];
-    const rewardCards = (parsed.rewardCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
+    const rewardCardsRaw = (parsed.rewardCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
       ...fallbackReward,
       id: `${fallbackReward.id}_reward_${idx}`,
     }));
+    const rewardCards = rewardCardsRaw.map((card, idx) => registerCardObjects(
+      manifestScope,
+      node.id,
+      card,
+      `reward_${idx}`
+    ));
+    const effectiveRewardCards = rewardCards.length > 0
+      ? rewardCards
+      : [registerCardObjects(manifestScope, node.id, fallbackReward, 'reward_fallback')];
+
+    const roomMusicPrompt = parsed.roomMusicPrompt || runData.roomMusicPrompt;
+    const backgroundPrompt = parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme);
+    const enemiesWithObjects = allEnemies.map((e, idx) => registerEnemyObjects(manifestScope, node.id, e, `${node.type.toLowerCase()}_${idx}`));
+    const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+    const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
+
+    ensureManifestEntry(runData.objectManifest, {
+      id: backgroundImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: backgroundPrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(backgroundImageId),
+    });
+    if (roomMusicPrompt) {
+      ensureManifestEntry(runData.objectManifest, {
+        id: roomMusicId,
+        roomId: node.id,
+        kind: 'audio',
+        prompt: roomMusicPrompt,
+        audioSource: node.type === 'Elite' ? 'boss' : 'generic',
+        musicMode: 'room',
+        fileKey: buildObjectFileKey(roomMusicId),
+      });
+    }
 
     return {
       roomId: node.id,
       nodeType: node.type === 'Elite' ? 'Elite' : 'Combat',
-      enemy,
-      rewardCards: rewardCards.length > 0 ? rewardCards : [fallbackReward],
-      backgroundPrompt: parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme),
-      roomMusicPrompt: parsed.roomMusicPrompt || runData.roomMusicPrompt,
+      enemies: enemiesWithObjects,
+      rewardCards: effectiveRewardCards,
+      backgroundPrompt,
+      roomMusicPrompt,
+      objectRefs: {
+        backgroundImageId,
+        enemySpriteImageIds: enemiesWithObjects.map(e => e.imageObjectId).filter(Boolean) as string[],
+        cardImageIds: effectiveRewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        roomMusicId: roomMusicPrompt ? roomMusicId : undefined,
+        enemySfxIds: enemiesWithObjects.map(e => e.audioObjectId).filter(Boolean) as string[],
+        cardSfxIds: effectiveRewardCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
     };
   } catch (err) {
     console.error('generateCombatRoomPayload fallback:', err);
+    const manifestScope = { objectManifest: runData.objectManifest };
     const fallbackEnemy = runData.enemies[0] || normalizeEnemy(undefined, runData.theme);
+    const backgroundPrompt = buildDefaultBattleBackgroundPrompt(runData.theme);
+    const fallbackRewardCards = [runData.cards[2] || runData.cards[0]].filter(Boolean);
+    const rewardCards = fallbackRewardCards.map((card, idx) => registerCardObjects(
+      manifestScope,
+      node.id,
+      card,
+      `fallback_reward_${idx}`
+    ));
+    let resolvedEnemy = fallbackEnemy;
+    if (node.type === 'Elite') {
+      const eliteHp = Math.min(65, Math.round(fallbackEnemy.maxHp * 1.4));
+      resolvedEnemy = {
+        ...fallbackEnemy,
+        id: `elite_${fallbackEnemy.id}`,
+        name: `Ascended ${fallbackEnemy.name}`,
+        maxHp: eliteHp,
+        currentHp: eliteHp,
+      };
+    }
+    const enemyWithObjects = registerEnemyObjects(
+      manifestScope,
+      node.id,
+      resolvedEnemy,
+      node.type.toLowerCase()
+    );
+    const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+    const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
+    ensureManifestEntry(runData.objectManifest, {
+      id: backgroundImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: backgroundPrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(backgroundImageId),
+    });
+    if (runData.roomMusicPrompt) {
+      ensureManifestEntry(runData.objectManifest, {
+        id: roomMusicId,
+        roomId: node.id,
+        kind: 'audio',
+        prompt: runData.roomMusicPrompt,
+        audioSource: node.type === 'Elite' ? 'boss' : 'generic',
+        musicMode: 'room',
+        fileKey: buildObjectFileKey(roomMusicId),
+      });
+    }
     return {
       roomId: node.id,
       nodeType: node.type === 'Elite' ? 'Elite' : 'Combat',
-      enemy: node.type === 'Elite'
-        ? {
-          ...fallbackEnemy,
-          id: `elite_${fallbackEnemy.id}`,
-          name: `Ascended ${fallbackEnemy.name}`,
-          maxHp: Math.round(fallbackEnemy.maxHp * 1.5),
-          currentHp: Math.round(fallbackEnemy.maxHp * 1.5),
-        }
-        : fallbackEnemy,
-      rewardCards: [runData.cards[2] || runData.cards[0]].filter(Boolean),
-      backgroundPrompt: buildDefaultBattleBackgroundPrompt(runData.theme),
+      enemies: [enemyWithObjects],
+      rewardCards,
+      backgroundPrompt,
       roomMusicPrompt: runData.roomMusicPrompt,
+      objectRefs: {
+        backgroundImageId,
+        enemySpriteImageIds: [enemyWithObjects.imageObjectId].filter(Boolean) as string[],
+        cardImageIds: rewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        roomMusicId: runData.roomMusicPrompt ? roomMusicId : undefined,
+        enemySfxIds: [enemyWithObjects.audioObjectId].filter(Boolean) as string[],
+        cardSfxIds: rewardCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
     };
   }
 }
@@ -1000,29 +1405,97 @@ async function generateBossRoomPayload(runData: RunDataV2, node: MapNode): Promi
       parts
     );
     const fallback = runData.boss || createPlaceholderBoss(runData.theme);
-    const boss: Boss = {
+    const manifestScope = { objectManifest: runData.objectManifest };
+    const rawHp = Number(parsed.boss?.maxHp) || fallback.maxHp;
+    const bossHp = Math.min(120, Math.max(80, rawHp));
+    const bossRaw: Boss = {
       ...fallback,
       ...parsed.boss,
-      maxHp: Math.max(120, Number(parsed.boss?.maxHp) || fallback.maxHp),
-      currentHp: Math.max(120, Number(parsed.boss?.maxHp) || Number(parsed.boss?.currentHp) || fallback.maxHp),
-      intents: parsed.boss?.intents && parsed.boss.intents.length > 0 ? parsed.boss.intents : fallback.intents,
-      phase2Intents: parsed.boss?.phase2Intents && parsed.boss.phase2Intents.length > 0 ? parsed.boss.phase2Intents : fallback.phase2Intents,
+      maxHp: bossHp,
+      currentHp: bossHp,
+      intents: capIntentDamage(
+        parsed.boss?.intents && parsed.boss.intents.length > 0 ? parsed.boss.intents : fallback.intents,
+        15
+      ),
+      phase2Intents: capIntentDamage(
+        parsed.boss?.phase2Intents && parsed.boss.phase2Intents.length > 0 ? parsed.boss.phase2Intents : fallback.phase2Intents,
+        20
+      ),
     };
+    const boss = registerBossObjects(manifestScope, node.id, bossRaw);
+    const backgroundPrompt = parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme);
+    const bossMusicPrompt = parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
+    const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+    const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
+    ensureManifestEntry(runData.objectManifest, {
+      id: backgroundImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: backgroundPrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(backgroundImageId),
+    });
+    ensureManifestEntry(runData.objectManifest, {
+      id: bossMusicId,
+      roomId: node.id,
+      kind: 'audio',
+      prompt: bossMusicPrompt,
+      audioSource: 'generic',
+      musicMode: 'boss',
+      fileKey: buildObjectFileKey(bossMusicId),
+    });
     return {
       roomId: node.id,
       nodeType: 'Boss',
       boss,
-      backgroundPrompt: parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme),
-      bossMusicPrompt: parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse',
+      backgroundPrompt,
+      bossMusicPrompt,
+      objectRefs: {
+        backgroundImageId,
+        bossSpriteImageId: boss.imageObjectId,
+        bossMusicId,
+        bossSfxId: boss.audioObjectId,
+        bossTtsId: boss.narratorAudioObjectId,
+      },
     };
   } catch (err) {
     console.error('generateBossRoomPayload fallback:', err);
+    const manifestScope = { objectManifest: runData.objectManifest };
+    const boss = registerBossObjects(manifestScope, node.id, runData.boss || createPlaceholderBoss(runData.theme));
+    const backgroundPrompt = buildDefaultBattleBackgroundPrompt(runData.theme);
+    const bossMusicPrompt = runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
+    const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+    const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
+    ensureManifestEntry(runData.objectManifest, {
+      id: backgroundImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: backgroundPrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(backgroundImageId),
+    });
+    ensureManifestEntry(runData.objectManifest, {
+      id: bossMusicId,
+      roomId: node.id,
+      kind: 'audio',
+      prompt: bossMusicPrompt,
+      audioSource: 'generic',
+      musicMode: 'boss',
+      fileKey: buildObjectFileKey(bossMusicId),
+    });
     return {
       roomId: node.id,
       nodeType: 'Boss',
-      boss: runData.boss || createPlaceholderBoss(runData.theme),
-      backgroundPrompt: buildDefaultBattleBackgroundPrompt(runData.theme),
-      bossMusicPrompt: runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse',
+      boss,
+      backgroundPrompt,
+      bossMusicPrompt,
+      objectRefs: {
+        backgroundImageId,
+        bossSpriteImageId: boss.imageObjectId,
+        bossMusicId,
+        bossSfxId: boss.audioObjectId,
+        bossTtsId: boss.narratorAudioObjectId,
+      },
     };
   }
 }
@@ -1077,6 +1550,27 @@ async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Prom
       footerText?: string;
       choices: EventChoicePayload[];
     }>('generateEventRoomPayload', config, parts);
+    const eventImageId = buildObjectId(node.id, 'image', 'event_visual');
+    ensureManifestEntry(runData.objectManifest, {
+      id: eventImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: parsed.imagePrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(eventImageId),
+    });
+    const normalizedChoices = (parsed.choices || []).slice(0, 3).map((choice, idx) => {
+      const addCard = choice.effects?.addCard
+        ? registerCardObjects({ objectManifest: runData.objectManifest }, node.id, choice.effects.addCard, `event_choice_${idx}`)
+        : undefined;
+      return {
+        ...choice,
+        effects: {
+          ...(choice.effects || {}),
+          addCard,
+        },
+      };
+    });
     return {
       roomId: node.id,
       nodeType: 'Event',
@@ -1084,16 +1578,39 @@ async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Prom
       description: parsed.description,
       imagePrompt: parsed.imagePrompt,
       footerText: parsed.footerText || 'Choose wisely.',
-      choices: (parsed.choices || []).slice(0, 3),
+      choices: normalizedChoices,
+      objectRefs: {
+        eventImageId,
+        cardImageIds: normalizedChoices
+          .map(choice => choice.effects?.addCard?.imageObjectId)
+          .filter(Boolean) as string[],
+        cardSfxIds: normalizedChoices
+          .map(choice => choice.effects?.addCard?.audioObjectId)
+          .filter(Boolean) as string[],
+      },
     };
   } catch (err) {
     console.error('generateEventRoomPayload fallback:', err);
+    const fallbackImagePrompt = `ancient glowing altar in a ruined hall, ${runData.theme} style`;
+    const eventImageId = buildObjectId(node.id, 'image', 'event_visual');
+    ensureManifestEntry(runData.objectManifest, {
+      id: eventImageId,
+      roomId: node.id,
+      kind: 'image',
+      prompt: fallbackImagePrompt,
+      imageType: 'background',
+      fileKey: buildObjectFileKey(eventImageId),
+    });
+    const fallbackCard = runData.cards[2] || runData.cards[0];
+    const fallbackEventCard = fallbackCard
+      ? registerCardObjects({ objectManifest: runData.objectManifest }, node.id, fallbackCard, 'event_fallback')
+      : undefined;
     return {
       roomId: node.id,
       nodeType: 'Event',
       title: 'The Silent Altar',
       description: 'A weathered altar glows faintly as you approach.',
-      imagePrompt: `ancient glowing altar in a ruined hall, ${runData.theme} style`,
+      imagePrompt: fallbackImagePrompt,
       footerText: 'Fate listens.',
       choices: [
         {
@@ -1118,9 +1635,14 @@ async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Prom
           description: 'Add a card to your deck.',
           icon: 'shield',
           color: 'blue',
-          effects: { addCard: runData.cards[2] || runData.cards[0] },
+          effects: { addCard: fallbackEventCard },
         },
       ],
+      objectRefs: {
+        eventImageId,
+        cardImageIds: fallbackEventCard?.imageObjectId ? [fallbackEventCard.imageObjectId] : [],
+        cardSfxIds: fallbackEventCard?.audioObjectId ? [fallbackEventCard.audioObjectId] : [],
+      },
     };
   }
 }
@@ -1147,14 +1669,27 @@ async function generateShopRoomPayload(runData: RunDataV2, node: MapNode): Promi
   try {
     const parsed = await requestStructuredJson<{ shopCards: Partial<Card>[] }>('generateShopRoomPayload', config, parts);
     const fallback = runData.cards[2] || runData.cards[0];
-    const cards = (parsed.shopCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
+    const cardsRaw = (parsed.shopCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
       ...fallback,
       id: `${fallback.id}_shop_${idx}`,
     }));
+    const cards = cardsRaw.map((card, idx) => registerCardObjects(
+      { objectManifest: runData.objectManifest },
+      node.id,
+      card,
+      `shop_${idx}`
+    ));
+    const effectiveShopCards = cards.length > 0
+      ? cards
+      : [registerCardObjects({ objectManifest: runData.objectManifest }, node.id, fallback, 'shop_fallback')];
     return {
       roomId: node.id,
       nodeType: 'Shop',
-      shopCards: cards.length > 0 ? cards : [fallback],
+      shopCards: effectiveShopCards,
+      objectRefs: {
+        cardImageIds: effectiveShopCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        cardSfxIds: effectiveShopCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
     };
   } catch (err) {
     console.error('generateShopRoomPayload fallback:', err);
@@ -1162,10 +1697,17 @@ async function generateShopRoomPayload(runData: RunDataV2, node: MapNode): Promi
       const n = card.name.trim().toLowerCase();
       return n !== 'strike' && n !== 'defend';
     });
+    const cards = (fallbackPool.length > 0 ? fallbackPool : runData.cards).slice(0, 3).map((card, idx) => (
+      registerCardObjects({ objectManifest: runData.objectManifest }, node.id, card, `shop_fallback_${idx}`)
+    ));
     return {
       roomId: node.id,
       nodeType: 'Shop',
-      shopCards: (fallbackPool.length > 0 ? fallbackPool : runData.cards).slice(0, 3),
+      shopCards: cards,
+      objectRefs: {
+        cardImageIds: cards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        cardSfxIds: cards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
     };
   }
 }
@@ -1200,79 +1742,211 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
   const theme = runData.theme;
   const cards = runData.cards.slice(0, 3);
   const firstEnemy = runData.enemies[0];
-  const promises: Promise<string>[] = [];
+  const imagePromises: Promise<void>[] = [];
 
-  promises.push(
-    generateGameImage(buildDefaultBattleBackgroundPrompt(theme), 'background')
-      .catch(e => { console.error('Failed to preload essential background', e); return ''; })
-  );
-  promises.push(
-    generateGameImage('A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up', 'character')
-      .catch(e => { console.error('Failed to preload essential player portrait', e); return ''; })
-  );
-  promises.push(
-    generateGameImage(`A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${theme} theme`, 'character')
-      .catch(e => { console.error('Failed to preload essential player sprite', e); return ''; })
-  );
+  const preloadImageWithManifest = async (
+    prompt: string | undefined,
+    type: 'asset' | 'background' | 'character',
+    objectId?: string,
+    onReady?: (url: string) => void,
+  ) => {
+    if (!prompt) return;
+    try {
+      const url = await generateGameImage(prompt, type, objectId ? buildObjectFileKey(objectId) : undefined);
+      if (url) {
+        markManifestReady(runData, objectId, url);
+        if (onReady) onReady(url);
+      }
+    } catch (e) {
+      console.error('Failed to preload essential image:', e);
+      markManifestFailed(runData, objectId, e);
+    }
+  };
 
-  if (firstEnemy?.imagePrompt) {
-    promises.push(
-      generateGameImage(
-        `A character sprite of ${firstEnemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`,
-        'character'
-      ).catch(e => { console.error('Failed to preload essential first enemy sprite', e); return ''; })
-    );
-  }
+  if (isRunDataV2(runData)) {
+    const firstNode = getFirstCombatNode(runData.node_map);
+    const roomPayload = firstNode ? runData.rooms[firstNode.id]?.payload : undefined;
+    const refs = roomPayload?.objectRefs;
 
-  cards.forEach((card) => {
-    if (card.imagePrompt) {
-      promises.push(generateGameImage(card.imagePrompt, 'asset').catch(e => {
-        console.error('Failed to preload essential card image', e);
-        return '';
+    imagePromises.push(preloadImageWithManifest(
+      roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite' || roomPayload.nodeType === 'Boss')
+        ? roomPayload.backgroundPrompt
+        : buildDefaultBattleBackgroundPrompt(theme),
+      'background',
+      refs?.backgroundImageId,
+      (url) => {
+        if (roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite' || roomPayload.nodeType === 'Boss')) {
+          roomPayload.backgroundImageUrl = url;
+          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), backgroundImageUrl: url };
+        }
+      }
+    ));
+    imagePromises.push(preloadImageWithManifest(
+      PLAYER_PORTRAIT_PROMPT,
+      'character',
+      refs?.playerPortraitImageId,
+      (url) => {
+        if (roomPayload) {
+          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), playerPortraitImageUrl: url };
+        }
+      }
+    ));
+    imagePromises.push(preloadImageWithManifest(
+      buildPlayerSpritePrompt(theme),
+      'character',
+      refs?.playerSpriteImageId,
+      (url) => {
+        if (roomPayload) {
+          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), playerSpriteImageUrl: url };
+        }
+      }
+    ));
+
+    if (firstEnemy?.imagePrompt) {
+      imagePromises.push(preloadImageWithManifest(
+        buildEnemySpritePrompt(firstEnemy.imagePrompt),
+        'character',
+        firstEnemy.imageObjectId || refs?.enemySpriteImageIds?.[0] || refs?.enemySpriteImageId,
+        (url) => {
+          firstEnemy.imageUrl = url;
+          if (roomPayload) {
+            const enemySpriteImageUrls = [...(roomPayload.objectUrls?.enemySpriteImageUrls || [])];
+            enemySpriteImageUrls[0] = url;
+            roomPayload.objectUrls = {
+              ...(roomPayload.objectUrls || {}),
+              enemySpriteImageUrl: url,
+              enemySpriteImageUrls,
+            };
+          }
+        }
+      ));
+    }
+
+    cards.forEach((card, index) => {
+      imagePromises.push(preloadImageWithManifest(
+        card.imagePrompt,
+        'asset',
+        card.imageObjectId || refs?.cardImageIds?.[index],
+        (url) => {
+          card.imageUrl = url;
+          if (roomPayload) {
+            const cardImageUrls = [...(roomPayload.objectUrls?.cardImageUrls || [])];
+            cardImageUrls[index] = url;
+            roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), cardImageUrls };
+          }
+        }
+      ));
+    });
+  } else {
+    imagePromises.push(preloadImageWithManifest(buildDefaultBattleBackgroundPrompt(theme), 'background'));
+    imagePromises.push(preloadImageWithManifest(PLAYER_PORTRAIT_PROMPT, 'character'));
+    imagePromises.push(preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character'));
+    if (firstEnemy?.imagePrompt) {
+      imagePromises.push(preloadImageWithManifest(buildEnemySpritePrompt(firstEnemy.imagePrompt), 'character', undefined, (url) => {
+        firstEnemy.imageUrl = url;
       }));
     }
-  });
+    cards.forEach(card => {
+      imagePromises.push(preloadImageWithManifest(card.imagePrompt, 'asset', undefined, (url) => {
+        card.imageUrl = url;
+      }));
+    });
+  }
 
-  await Promise.all(promises);
+  await Promise.all(imagePromises);
 }
 
 export async function preloadRoomImages(runData: RunDataV2, roomId: string, payload: RoomContentPayload): Promise<void> {
-  const promises: Promise<string>[] = [];
+  const preloadImage = async (
+    prompt: string | undefined,
+    type: 'asset' | 'background' | 'character',
+    objectId?: string,
+    onReady?: (url: string) => void,
+  ) => {
+    if (!prompt) return;
+    try {
+      const url = await generateGameImage(prompt, type, objectId ? buildObjectFileKey(objectId) : undefined);
+      if (url) {
+        markManifestReady(runData, objectId, url);
+        if (onReady) onReady(url);
+      }
+    } catch (err) {
+      console.error(`Failed to preload room image (${roomId}):`, err);
+      markManifestFailed(runData, objectId, err);
+    }
+  };
+
+  const promises: Promise<void>[] = [];
 
   if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
-    if (payload.backgroundPrompt) {
-      promises.push(generateGameImage(payload.backgroundPrompt, 'background').catch(() => ''));
-    }
-    if (payload.enemy?.imagePrompt) {
-      promises.push(generateGameImage(
-        `A character sprite of ${payload.enemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`,
-        'character'
-      ).catch(() => ''));
-    }
-    (payload.rewardCards || []).forEach((card) => {
-      if (card.imagePrompt) {
-        promises.push(generateGameImage(card.imagePrompt, 'asset').catch(() => ''));
-      }
+    const primaryEnemy = payload.enemies[0];
+    promises.push(preloadImage(payload.backgroundPrompt, 'background', payload.objectRefs?.backgroundImageId, (url) => {
+      payload.backgroundImageUrl = url;
+      payload.objectUrls = { ...(payload.objectUrls || {}), backgroundImageUrl: url };
+    }));
+    payload.enemies.forEach((enemy, idx) => {
+      promises.push(preloadImage(
+        enemy.imagePrompt ? buildEnemySpritePrompt(enemy.imagePrompt) : undefined,
+        'character',
+        enemy.imageObjectId || payload.objectRefs?.enemySpriteImageIds?.[idx],
+        (url) => {
+          enemy.imageUrl = url;
+          const enemySpriteImageUrls = [...(payload.objectUrls?.enemySpriteImageUrls || [])];
+          enemySpriteImageUrls[idx] = url;
+          payload.objectUrls = { ...(payload.objectUrls || {}), enemySpriteImageUrls };
+        }
+      ));
+    });
+    (payload.rewardCards || []).forEach((card, idx) => {
+      promises.push(preloadImage(card.imagePrompt, 'asset', card.imageObjectId || payload.objectRefs?.cardImageIds?.[idx], (url) => {
+        card.imageUrl = url;
+        const cardImageUrls = [...(payload.objectUrls?.cardImageUrls || [])];
+        cardImageUrls[idx] = url;
+        payload.objectUrls = { ...(payload.objectUrls || {}), cardImageUrls };
+      }));
     });
   } else if (payload.nodeType === 'Boss') {
-    if (payload.backgroundPrompt) {
-      promises.push(generateGameImage(payload.backgroundPrompt, 'background').catch(() => ''));
-    }
-    if (payload.boss?.imagePrompt) {
-      promises.push(generateGameImage(
-        `A character sprite of ${payload.boss.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`,
-        'character'
-      ).catch(() => ''));
-    }
-  } else if (payload.nodeType === 'Event') {
-    if (payload.imagePrompt) {
-      promises.push(generateGameImage(payload.imagePrompt, 'background').catch(() => ''));
-    }
-  } else if (payload.nodeType === 'Shop') {
-    payload.shopCards.forEach((card) => {
-      if (card.imagePrompt) {
-        promises.push(generateGameImage(card.imagePrompt, 'asset').catch(() => ''));
+    promises.push(preloadImage(payload.backgroundPrompt, 'background', payload.objectRefs?.backgroundImageId, (url) => {
+      payload.backgroundImageUrl = url;
+      payload.objectUrls = { ...(payload.objectUrls || {}), backgroundImageUrl: url };
+    }));
+    promises.push(preloadImage(
+      payload.boss?.imagePrompt ? buildBossSpritePrompt(payload.boss.imagePrompt) : undefined,
+      'character',
+      payload.boss.imageObjectId || payload.objectRefs?.bossSpriteImageId,
+      (url) => {
+        payload.boss.imageUrl = url;
+        payload.objectUrls = { ...(payload.objectUrls || {}), bossSpriteImageUrl: url };
       }
+    ));
+  } else if (payload.nodeType === 'Event') {
+    promises.push(preloadImage(payload.imagePrompt, 'background', payload.objectRefs?.eventImageId, (url) => {
+      payload.imageUrl = url;
+      payload.objectUrls = { ...(payload.objectUrls || {}), eventImageUrl: url };
+    }));
+    payload.choices.forEach((choice, idx) => {
+      if (choice.effects?.addCard) {
+        promises.push(preloadImage(
+          choice.effects.addCard.imagePrompt,
+          'asset',
+          choice.effects.addCard.imageObjectId || payload.objectRefs?.cardImageIds?.[idx],
+          (url) => {
+            choice.effects.addCard!.imageUrl = url;
+            const cardImageUrls = [...(payload.objectUrls?.cardImageUrls || [])];
+            cardImageUrls[idx] = url;
+            payload.objectUrls = { ...(payload.objectUrls || {}), cardImageUrls };
+          }
+        ));
+      }
+    });
+  } else if (payload.nodeType === 'Shop') {
+    payload.shopCards.forEach((card, idx) => {
+      promises.push(preloadImage(card.imagePrompt, 'asset', card.imageObjectId || payload.objectRefs?.cardImageIds?.[idx], (url) => {
+        card.imageUrl = url;
+        const cardImageUrls = [...(payload.objectUrls?.cardImageUrls || [])];
+        cardImageUrls[idx] = url;
+        payload.objectUrls = { ...(payload.objectUrls || {}), cardImageUrls };
+      }));
     });
   }
 
@@ -1280,12 +1954,21 @@ export async function preloadRoomImages(runData: RunDataV2, roomId: string, payl
   await Promise.all(promises);
 }
 
-export function applyRoomContentToRunData(runData: RunDataV2, roomId: string, payload: RoomContentPayload): RunDataV2 {
+export function applyRoomContentToRunData(
+  runData: RunDataV2,
+  roomId: string,
+  payload: RoomContentPayload,
+  manifestPatch?: Record<string, GeneratedObjectManifestEntry>
+): RunDataV2 {
   const now = nowTs();
   const next = {
     ...runData,
     cards: runData.cards,
     enemies: runData.enemies,
+    objectManifest: {
+      ...runData.objectManifest,
+      ...(manifestPatch || {}),
+    },
     rooms: {
       ...runData.rooms,
       [roomId]: {
@@ -1299,10 +1982,12 @@ export function applyRoomContentToRunData(runData: RunDataV2, roomId: string, pa
 
   if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
     next.cards = mergeUniqueCards(next.cards, payload.rewardCards || []);
-    next.enemies = mergeUniqueEnemies(next.enemies, [payload.enemy]);
+    if (payload.enemies.length > 0) {
+      next.enemies = mergeUniqueEnemies(next.enemies, payload.enemies);
+    }
     next.roomMusicPrompt = payload.roomMusicPrompt || next.roomMusicPrompt;
     const node = next.node_map.find(n => n.id === roomId);
-    if (node) node.data = payload.enemy;
+    if (node) node.data = payload.enemies;
   }
 
   if (payload.nodeType === 'Boss') {

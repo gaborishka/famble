@@ -1,8 +1,8 @@
 import { Card, GameState, Enemy, Boss } from '../../shared/types/game';
 import { drawCards } from './deckManager';
 
-export function resolveCard(card: Card, index: number, state: GameState): GameState {
-  const newState = { ...state };
+export function resolveCard(card: Card, index: number, state: GameState, targetIndex?: number): GameState {
+  const newState = { ...state, enemies: state.enemies.map(e => ({ ...e })) };
 
   if (card.cost > newState.energy) {
     return state; // Cannot play
@@ -19,14 +19,18 @@ export function resolveCard(card: Card, index: number, state: GameState): GameSt
     newState.statusEffects['Block'] = (newState.statusEffects['Block'] || 0) + card.block;
   }
 
-  if (card.damage && newState.currentEnemy) {
+  // Resolve target: use provided index, or auto-target first living enemy
+  const resolvedTarget = targetIndex ?? newState.enemies.findIndex(e => e.currentHp > 0);
+  const targetEnemy = resolvedTarget >= 0 ? newState.enemies[resolvedTarget] : null;
+
+  if (card.damage && targetEnemy && targetEnemy.currentHp > 0) {
     let dmg = card.damage;
-    if (newState.currentEnemy.statusEffects && newState.currentEnemy.statusEffects['Vulnerable']) {
+    if (targetEnemy.statusEffects && targetEnemy.statusEffects['Vulnerable']) {
       dmg = Math.floor(dmg * 1.5);
     }
 
     // Simple damage to enemy
-    let enemyBlock = newState.currentEnemy.statusEffects?.['Block'] || 0;
+    let enemyBlock = targetEnemy.statusEffects?.['Block'] || 0;
     if (enemyBlock >= dmg) {
       enemyBlock -= dmg;
       dmg = 0;
@@ -35,25 +39,25 @@ export function resolveCard(card: Card, index: number, state: GameState): GameSt
       enemyBlock = 0;
     }
 
-    newState.currentEnemy = {
-      ...newState.currentEnemy,
-      currentHp: Math.max(0, newState.currentEnemy.currentHp - dmg),
+    newState.enemies[resolvedTarget] = {
+      ...targetEnemy,
+      currentHp: Math.max(0, targetEnemy.currentHp - dmg),
       statusEffects: {
-        ...(newState.currentEnemy.statusEffects || {}),
+        ...(targetEnemy.statusEffects || {}),
         'Block': enemyBlock
       }
     };
   }
 
   if (card.magicNumber && card.description.includes('Vulnerable')) {
-    if (newState.currentEnemy) {
-      newState.currentEnemy = {
-        ...newState.currentEnemy,
+    if (targetEnemy && resolvedTarget >= 0 && targetEnemy.currentHp > 0) {
+      newState.enemies[resolvedTarget] = {
+        ...newState.enemies[resolvedTarget],
         statusEffects: {
-          ...(newState.currentEnemy.statusEffects || {}),
-          'Vulnerable': (newState.currentEnemy.statusEffects?.['Vulnerable'] || 0) + card.magicNumber
+          ...(newState.enemies[resolvedTarget].statusEffects || {}),
+          'Vulnerable': (newState.enemies[resolvedTarget].statusEffects?.['Vulnerable'] || 0) + card.magicNumber
         }
-      }
+      };
     }
   }
 

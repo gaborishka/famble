@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Card } from '../../../shared/types/game';
+import { Card, EventRoomContent } from '../../../shared/types/game';
 import { motion } from 'motion/react';
 import { PlayerHUD } from './PlayerHUD';
 import { GameImage } from '../GameImage';
@@ -259,6 +259,7 @@ interface EventScreenProps {
   currentFloor: number;
   totalFloors: number;
   availableCards: Card[];
+  roomEvent?: EventRoomContent | null;
   onComplete: (effects: EventEffects) => void;
 }
 
@@ -269,17 +270,40 @@ export const EventScreen: React.FC<EventScreenProps> = ({
   currentFloor,
   totalFloors,
   availableCards,
+  roomEvent,
   onComplete,
 }) => {
   // Pick a random event once per mount
-  const event = useMemo(() => {
+  const fallbackEvent = useMemo(() => {
     return EVENT_TEMPLATES[Math.floor(Math.random() * EVENT_TEMPLATES.length)];
   }, []);
 
   const choices = useMemo(() => {
-    return event.getChoices({ playerHp, playerMaxHp, gold, availableCards });
+    if (roomEvent) {
+      return roomEvent.choices.map(choice => ({
+        label: choice.label,
+        description: choice.description,
+        icon: choice.icon || 'shield',
+        color: choice.color || 'blue',
+        apply: () => {
+          const effects = { ...(choice.effects || {}) };
+          if (effects.addCard) {
+            effects.addCard = { ...effects.addCard, id: `event-${choice.id}-${Date.now()}` };
+          }
+          return effects;
+        },
+      }));
+    }
+    return fallbackEvent.getChoices({ playerHp, playerMaxHp, gold, availableCards });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [event]);
+  }, [roomEvent, fallbackEvent]);
+
+  const eventTitle = roomEvent?.title || fallbackEvent.title;
+  const eventDescription = roomEvent?.description || fallbackEvent.description;
+  const eventImagePrompt = roomEvent?.imagePrompt || fallbackEvent.imagePrompt;
+  const eventImageUrl = roomEvent?.imageUrl || roomEvent?.objectUrls?.eventImageUrl;
+  const eventImageFileKey = roomEvent?.objectRefs?.eventImageId;
+  const eventFooterText = roomEvent?.footerText || fallbackEvent.footerText;
 
   const [chosen, setChosen] = useState(false);
 
@@ -310,9 +334,11 @@ export const EventScreen: React.FC<EventScreenProps> = ({
           className="w-full max-w-md h-44 sm:h-52 rounded-lg border-2 border-slate-600/50 overflow-hidden mb-8 bg-slate-800 shadow-2xl shadow-black/40"
         >
           <GameImage
-            prompt={event.imagePrompt}
+            src={eventImageUrl}
+            prompt={eventImagePrompt}
+            fileKey={eventImageFileKey}
             className="w-full h-full"
-            alt={event.title}
+            alt={eventTitle}
             type="background"
           />
         </motion.div>
@@ -324,9 +350,9 @@ export const EventScreen: React.FC<EventScreenProps> = ({
           transition={{ delay: 0.2 }}
           className="text-center mb-8 max-w-lg"
         >
-          <h2 className="text-3xl sm:text-4xl font-bold text-white mb-3 tracking-tight">{event.title}</h2>
+          <h2 className="text-3xl sm:text-4xl font-bold text-white mb-3 tracking-tight">{eventTitle}</h2>
           <div className="w-48 h-px mx-auto bg-gradient-to-r from-transparent via-slate-500 to-transparent mb-5" />
-          <p className="text-slate-400 text-base leading-relaxed px-2">{event.description}</p>
+          <p className="text-slate-400 text-base leading-relaxed px-2">{eventDescription}</p>
         </motion.div>
 
         {/* Choices */}
@@ -367,7 +393,7 @@ export const EventScreen: React.FC<EventScreenProps> = ({
           transition={{ delay: 0.8 }}
           className="text-slate-500 italic text-sm tracking-wide"
         >
-          {event.footerText}
+          {eventFooterText}
         </motion.p>
       </div>
     </div>

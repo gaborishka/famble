@@ -38,7 +38,13 @@ export const CardComponent: React.FC<CardProps> = ({ card, disabled }) => {
       {/* Card Image Area */}
       <div className="h-[7.5rem] w-full bg-slate-900 relative border-y-[3px] border-[#94a3b8] flex items-center justify-center overflow-hidden shrink-0 shadow-[inset_0_0_20px_rgba(0,0,0,0.8)]">
         {card.imagePrompt ? (
-          <GameImage prompt={card.imagePrompt} className="w-full h-full absolute inset-0 object-cover" alt={card.name} />
+          <GameImage
+            src={card.imageUrl}
+            prompt={card.imagePrompt}
+            fileKey={card.imageObjectId}
+            className="w-full h-full absolute inset-0 object-cover"
+            alt={card.name}
+          />
         ) : (
           <div className="text-slate-500 text-[10px] text-center px-2 z-10 font-bold uppercase tracking-wider">
             {card.tags.join(' • ')}

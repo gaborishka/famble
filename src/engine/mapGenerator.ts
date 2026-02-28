@@ -1,4 +1,4 @@
-import { Enemy, MapNode, RunData } from '../../shared/types/game';
+import { Boss, Enemy, MapNode, RunData } from '../../shared/types/game';
 
 type NodeType = MapNode['type'];
 
@@ -32,7 +32,8 @@ const buildRowWidths = (playableRows: number): number[] => {
   const dynamicMax = playableRows <= 5 ? 5 : MAX_ROW_WIDTH;
   const center = (playableRows - 1) / 2;
   return Array.from({ length: playableRows }, (_, row) => {
-    if (row === 0 || row === playableRows - 1) return dynamicMin;
+    if (row === 0) return 1; // one clear starting room
+    if (row === playableRows - 1) return dynamicMin;
     const normalizedDistance = center === 0 ? 0 : Math.abs(row - center) / center;
     const widthSpread = dynamicMax - dynamicMin;
     const base = Math.round(dynamicMax - normalizedDistance * (widthSpread + 0.8));
@@ -45,8 +46,8 @@ const buildRowWidths = (playableRows: number): number[] => {
 };
 
 const createEliteFromEnemy = (enemy: Enemy, eliteIndex: number): Enemy => {
-  const hpMultiplier = 1.6;
-  const intentMultiplier = 1.35;
+  const hpMultiplier = 1.4;
+  const intentMultiplier = 1.2;
   const maxHp = Math.max(35, Math.round(enemy.maxHp * hpMultiplier));
 
   const scaleIntentValue = (value: number): number => {
@@ -110,8 +111,8 @@ const placeType = (
 
 const buildBaseRowTypes = (row: number, playableRows: number, width: number): NodeType[] => {
   if (row === 0) {
-    // Start row should be simple and forgiving.
-    return Array.from({ length: width }, (_, idx) => (idx === Math.floor(width / 2) ? 'Event' : 'Combat'));
+    // One deterministic combat start for the fastest first fight.
+    return ['Combat'];
   }
 
   const progress = row / (playableRows - 1);
@@ -255,13 +256,18 @@ export const generateFallbackNodeMap = (runData: RunData): MapNode[] => {
     : [{
       id: 'fallback-enemy',
       name: 'Wandering Shade',
-      maxHp: 35,
-      currentHp: 35,
+      maxHp: 28,
+      currentHp: 28,
       description: 'A fallback enemy spawned because no enemies were generated.',
       intents: [
         { type: 'Attack' as const, value: 7, description: 'Deal 7 damage.' },
       ],
     }];
+
+  const scaleEnemyHp = (enemy: Enemy, factor: number): Enemy => {
+    const hp = Math.max(1, Math.round(enemy.maxHp * factor));
+    return { ...enemy, maxHp: hp, currentHp: hp };
+  };
 
   const rowTypePlan = createRowTypePlan(PLAYABLE_ROWS);
   const rows: MapNode[][] = [];
@@ -272,10 +278,19 @@ export const generateFallbackNodeMap = (runData: RunData): MapNode[] => {
     const rowNodes = types.map((type, col) => {
       let data: unknown;
       if (type === 'Combat') {
-        data = pickEnemy(enemies, combatIndex);
+        const primary = pickEnemy(enemies, combatIndex);
         combatIndex++;
+        // 30% chance for dual fight on row >= 2
+        if (row >= 2 && enemies.length > 1 && Math.random() < 0.3) {
+          const secondIdx = (combatIndex) % enemies.length;
+          combatIndex++;
+          const second = pickEnemy(enemies, secondIdx);
+          data = [scaleEnemyHp({ ...primary, id: `${primary.id}-dual-a` }, 0.7), scaleEnemyHp({ ...second, id: `${second.id}-dual-b` }, 0.7)];
+        } else {
+          data = [primary];
+        }
       } else if (type === 'Elite') {
-        data = createEliteFromEnemy(pickEnemy(enemies, eliteIndex), eliteIndex);
+        data = [createEliteFromEnemy(pickEnemy(enemies, eliteIndex), eliteIndex)];
         eliteIndex++;
       }
 
@@ -295,6 +310,30 @@ export const generateFallbackNodeMap = (runData: RunData): MapNode[] => {
   });
 
   const bossRowIndex = PLAYABLE_ROWS;
+  const fallbackBoss: Boss = {
+    id: 'fallback-boss',
+    name: 'Forgotten Colossus',
+    maxHp: 110,
+    currentHp: 110,
+    description: 'A fallback boss spawned because boss data was not generated yet.',
+    enrageThreshold: 50,
+    intents: [
+      { type: 'Attack', value: 12, description: 'Deal 12 damage.' },
+      { type: 'Defend', value: 10, description: 'Gain 10 block.' },
+      { type: 'AttackBuff', value: 10, secondaryValue: 2, description: 'Deal 10 damage and gain 2 Strength.' },
+    ],
+    phase2Intents: [
+      { type: 'Attack', value: 18, description: 'Deal 18 damage.' },
+      { type: 'AttackDefend', value: 14, secondaryValue: 10, description: 'Deal 14 damage and gain 10 block.' },
+    ],
+    imagePrompt: 'a colossal armored titan forged from obsidian and molten iron, side profile, facing left',
+    audioPrompt: 'colossal hammer impact cracking obsidian floor',
+    narratorText: 'You are not yet ready to stand before me.',
+    narratorVoiceStyle: 'ancient stern authority',
+    narratorVoiceGender: 'neutral',
+  };
+
+  const bossData = 'boss' in runData && runData.boss ? runData.boss : fallbackBoss;
   rows.push([{
     id: 'boss',
     type: 'Boss',
@@ -303,7 +342,7 @@ export const generateFallbackNodeMap = (runData: RunData): MapNode[] => {
     row: bossRowIndex,
     nextNodes: [],
     completed: false,
-    data: runData.boss,
+    data: bossData,
   } satisfies MapNode]);
 
   connectRows(rows);

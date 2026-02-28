@@ -3,25 +3,38 @@ import { generateGameImage } from '../services/geminiService';
 import { Loader2 } from 'lucide-react';
 
 interface GameImageProps {
+  src?: string;
   prompt?: string;
+  fileKey?: string;
   className?: string;
   alt?: string;
   type?: 'asset' | 'background' | 'character';
 }
 
-export const GameImage: React.FC<GameImageProps> = ({ prompt, className = '', alt = 'Game Asset', type = 'asset' }) => {
+export const GameImage: React.FC<GameImageProps> = ({ src, prompt, fileKey, className = '', alt = 'Game Asset', type = 'asset' }) => {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (!prompt) return;
+    if (src) {
+      setImageUrl(src);
+      setLoading(false);
+      setError(false);
+      return;
+    }
+
+    if (!prompt) {
+      setImageUrl(null);
+      setLoading(false);
+      return;
+    }
 
     let isMounted = true;
     setLoading(true);
     setError(false);
 
-    generateGameImage(prompt, type as 'asset' | 'background' | 'character')
+    generateGameImage(prompt, type as 'asset' | 'background' | 'character', fileKey)
       .then(url => {
         if (isMounted) {
           setImageUrl(url);
@@ -42,7 +55,7 @@ export const GameImage: React.FC<GameImageProps> = ({ prompt, className = '', al
     return () => {
       isMounted = false;
     };
-  }, [prompt, type]);
+  }, [src, prompt, type, fileKey]);
 
   if (loading || !imageUrl) {
     return (

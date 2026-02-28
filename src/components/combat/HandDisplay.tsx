@@ -7,6 +7,8 @@ interface HandDisplayProps {
   hand: Card[];
   energy: number;
   onPlayCard: (card: Card, index: number) => void;
+  targetEnemyIndex?: number;
+  multipleEnemies?: boolean;
 }
 
 /* ─── Quadratic-bezier helpers ───────────────────────────────── */
@@ -98,8 +100,13 @@ const TargetingArrow: React.FC<{
 
 /* ─── Resolve target element centre (viewport coords) ─────── */
 
-function getTargetCenter(cardType: string): { x: number; y: number } | null {
-  const id = cardType === 'Attack' ? 'combat-enemy' : 'combat-player';
+function getTargetCenter(cardType: string, targetEnemyIndex?: number): { x: number; y: number } | null {
+  let id: string;
+  if (cardType === 'Attack') {
+    id = targetEnemyIndex !== undefined ? `combat-enemy-${targetEnemyIndex}` : 'combat-enemy-0';
+  } else {
+    id = 'combat-player';
+  }
   const el = document.getElementById(id);
   if (!el) return null;
   const r = el.getBoundingClientRect();
@@ -108,7 +115,7 @@ function getTargetCenter(cardType: string): { x: number; y: number } | null {
 
 /* ─── Hand display ───────────────────────────────────────────── */
 
-export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCard }) => {
+export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCard, targetEnemyIndex, multipleEnemies }) => {
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [draggingCard, setDraggingCard] = useState<string | null>(null);
   const [dragArrow, setDragArrow] = useState<{
@@ -184,7 +191,7 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
                 dragConstraints={{ top: -1000, bottom: 0, left: -1000, right: 1000 }}
                 onDragStart={() => {
                   const el = cardElMap.current.get(uniqueId);
-                  const target = getTargetCenter(card.type);
+                  const target = getTargetCenter(card.type, targetEnemyIndex);
                   if (el && target) {
                     const r = el.getBoundingClientRect();
                     setDragArrow({
