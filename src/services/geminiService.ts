@@ -34,9 +34,10 @@ export async function generateRunData(prompt: string, fileData?: { mimeType: str
       systemInstruction: `You are an expert game designer for a Slay the Spire-style roguelike deckbuilder.
 Based on the user's input (theme, text, or image), generate a complete set of game data.
 The game should be balanced, thematic, and fun.
-Create 5 cards (mix of Attack, Skill, Power), 2 normal enemies, 1 boss, and 1 synergy rule.
-Cards should cost between 0 and 3 energy.
-Player starts with 50 HP and 3 Energy.
+Create exactly 7 cards in total. The first card MUST be named 'Strike' (type Attack, 1 cost, 6 damage, no special effects). The second card MUST be named 'Defend' (type Skill, 1 cost, 5 block, no special effects). The remaining 5 cards should be unique special cards (mix of Attack, Skill, Power).
+Also create exactly 4 unique normal enemies (ranging from simple to elite difficulty), 1 boss, and 1 synergy rule.
+Enemies do not use a deck of cards. Instead, their actions are dictated by a fixed sequence of 'intents' that loops. Simple enemies should have a sequence of 2-3 intents, medium 3-4, elite 3-5, and the boss 4-7 intents.
+Intents can be simple (Attack, Defend, Buff, Debuff, Unknown) or combined (AttackDefend, AttackDebuff, AttackBuff). Use 'value' for the primary amount (e.g. damage), and 'secondaryValue' for the secondary effect (e.g. block amount or debuff stacks).
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
 For audio, follow the thematic instructions provided by the user (or extrapolate based on Cooking, Legal, Science themes).
 Boss must include a 'narratorText' which is a dramatic opening line the boss will say when encountered.
@@ -76,15 +77,16 @@ Return the data strictly matching the provided JSON schema.`,
                 maxHp: { type: Type.INTEGER },
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
-                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation' },
+                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
                 audioPrompt: { type: Type.STRING, description: 'A description for elevenlabs sound effect of the enemy attacking' },
                 intents: {
                   type: Type.ARRAY,
                   items: {
                     type: Type.OBJECT,
                     properties: {
-                      type: { type: Type.STRING, description: 'Attack, Defend, Buff, or Debuff' },
-                      value: { type: Type.INTEGER },
+                      type: { type: Type.STRING, description: 'Attack, Defend, Buff, Debuff, AttackDefend, AttackBuff, AttackDebuff, or Unknown' },
+                      value: { type: Type.INTEGER, description: 'Primary value based on type (e.g. damage amount or block amount)' },
+                      secondaryValue: { type: Type.INTEGER, description: 'Optional secondary value for combined intents (e.g. block or debuff amount)' },
                       description: { type: Type.STRING }
                     },
                     required: ['type', 'value', 'description']
@@ -102,7 +104,7 @@ Return the data strictly matching the provided JSON schema.`,
               maxHp: { type: Type.INTEGER },
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player' },
+              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
               audioPrompt: { type: Type.STRING, description: 'A description for a boss attacking sound effect' },
               narratorText: { type: Type.STRING, description: 'A dramatic opening dialogue line for the boss via text-to-speech module' },
               enrageThreshold: { type: Type.INTEGER, description: 'Percentage HP (0-100) when phase 2 starts' },
@@ -111,8 +113,9 @@ Return the data strictly matching the provided JSON schema.`,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    type: { type: Type.STRING },
-                    value: { type: Type.INTEGER },
+                    type: { type: Type.STRING, description: 'Attack, Defend, Buff, Debuff, AttackDefend, AttackBuff, AttackDebuff, or Unknown' },
+                    value: { type: Type.INTEGER, description: 'Primary value based on type' },
+                    secondaryValue: { type: Type.INTEGER, description: 'Optional secondary value' },
                     description: { type: Type.STRING }
                   },
                   required: ['type', 'value', 'description']
@@ -123,8 +126,9 @@ Return the data strictly matching the provided JSON schema.`,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    type: { type: Type.STRING },
-                    value: { type: Type.INTEGER },
+                    type: { type: Type.STRING, description: 'Attack, Defend, Buff, Debuff, AttackDefend, AttackBuff, AttackDebuff, or Unknown' },
+                    value: { type: Type.INTEGER, description: 'Primary value based on type' },
+                    secondaryValue: { type: Type.INTEGER, description: 'Optional secondary value' },
                     description: { type: Type.STRING }
                   },
                   required: ['type', 'value', 'description']
@@ -278,6 +282,10 @@ export async function generateGameImage(prompt: string, type: 'asset' | 'backgro
   return request;
 }
 
+function stripDirectionFromPrompt(prompt: string): string {
+  return prompt.replace(/facing right|looking right/gi, '').replace(/\s{2,}/g, ' ').trim();
+}
+
 export async function preloadFirstCombatImages(runData: RunData): Promise<void> {
   const promises: Promise<string>[] = [];
 
@@ -290,7 +298,7 @@ export async function preloadFirstCombatImages(runData: RunData): Promise<void> 
 
   // First enemy sprite
   if (runData.enemies.length > 0 && runData.enemies[0].imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${runData.enemies[0].imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
+    promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(runData.enemies[0].imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
   }
 
   // All starting cards
@@ -310,13 +318,13 @@ export async function preloadBackgroundImages(runData: RunData): Promise<void> {
   for (let i = 1; i < runData.enemies.length; i++) {
     const enemy = runData.enemies[i];
     if (enemy.imagePrompt) {
-      promises.push(generateGameImage(`A character sprite of ${enemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
+      promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(enemy.imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
     }
   }
 
   // Boss
   if (runData.boss && runData.boss.imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${runData.boss.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
+    promises.push(generateGameImage(`A character sprite of ${stripDirectionFromPrompt(runData.boss.imagePrompt)}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
   }
 
   // We don't await this intentionally so it runs in the background

@@ -22,8 +22,9 @@ export interface Relic {
 }
 
 export interface Intent {
-  type: 'Attack' | 'Defend' | 'Buff' | 'Debuff';
+  type: 'Attack' | 'Defend' | 'Buff' | 'Debuff' | 'AttackDefend' | 'AttackDebuff' | 'AttackBuff' | 'Unknown';
   value: number;
+  secondaryValue?: number;
   description: string;
 }
 

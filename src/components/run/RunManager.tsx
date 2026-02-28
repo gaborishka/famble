@@ -14,7 +14,19 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
   const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
-  const [deck, setDeck] = useState<Card[]>(runData.cards);
+  const [deck, setDeck] = useState<Card[]>(() => {
+    // Generate starter deck of 10 cards: 5 Strike, 4 Defend, 1 Unique
+    const strike = runData.cards.find(c => c.name.toLowerCase().includes('strike')) || runData.cards[0];
+    const defend = runData.cards.find(c => c.name.toLowerCase().includes('defend')) || runData.cards[1] || runData.cards[0];
+    const specials = runData.cards.filter(c => c !== strike && c !== defend);
+    const uniqueCard = specials[0] || runData.cards[2] || strike;
+
+    return [
+      ...Array(5).fill(null).map((_, i) => ({ ...strike, id: `strike-start-${i}` })),
+      ...Array(4).fill(null).map((_, i) => ({ ...defend, id: `defend-start-${i}` })),
+      { ...uniqueCard, id: `unique-start-0` }
+    ];
+  });
   const [playerHp, setPlayerHp] = useState(50);
   const [playerMaxHp, setPlayerMaxHp] = useState(50);
   const [gold, setGold] = useState(100);
@@ -156,8 +168,9 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    // Generate 3 random cards from runData.cards
-    const rewardCards = [...runData.cards].sort(() => Math.random() - 0.5).slice(0, 3);
+    // Generate 3 random cards from runData.cards, excluding basic Strike/Defend
+    const rewardPool = runData.cards.filter(c => !c.name.toLowerCase().includes('strike') && !c.name.toLowerCase().includes('defend'));
+    const rewardCards = [...rewardPool].sort(() => Math.random() - 0.5).slice(0, 3);
     return <CardReward cards={rewardCards} onSelect={handleCardSelect} onSkip={handleSkipReward} />;
   }
 
@@ -287,11 +300,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
                       key={`${card.id}-${idx}`}
                       onClick={() => handleCardUpgrade(idx)}
                       disabled={card.upgraded}
-                      className={`text-left p-4 rounded-xl border transition-all ${
-                        card.upgraded
+                      className={`text-left p-4 rounded-xl border transition-all ${card.upgraded
                           ? 'bg-slate-900/50 border-slate-700 text-slate-500 cursor-not-allowed'
                           : 'bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40 hover:border-amber-400'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center justify-between mb-2">
                         <span className="font-bold text-lg">{card.name}{card.upgraded ? ' +' : ''}</span>

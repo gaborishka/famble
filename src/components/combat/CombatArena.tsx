@@ -213,7 +213,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     if (isGameOver) return;
 
     const intent = getNextIntent(gameState.currentEnemy!, gameState.turn);
-    if (intent && intent.type === 'Attack') {
+    const isAttackIntent = ['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff'].includes(intent?.type || '');
+
+    if (intent && isAttackIntent) {
       if (gameState.currentEnemy!.audioPrompt) {
         generateSoundEffect(gameState.currentEnemy!.audioPrompt).then(url => {
           if (url) new Audio(url).play().catch(e => console.log('Audio autoplay prevented', e));
@@ -229,6 +231,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
         // Show floating text
         let dmg = intent.value;
+        if (gameState.currentEnemy!.statusEffects?.['Strength']) {
+          dmg += gameState.currentEnemy!.statusEffects['Strength'];
+        }
         if (gameState.statusEffects['Vulnerable']) dmg = Math.floor(dmg * 1.5);
 
         let actualDmg = dmg;
@@ -262,8 +267,23 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     }
   };
 
+  // Get current intent and define icon helper
   const currentEnemyState = gameState.currentEnemy;
   const intent = getNextIntent(currentEnemyState, gameState.turn);
+
+  const getIntentIcon = (type: string) => {
+    switch (type) {
+      case 'Attack': return <span className="text-red-500 text-2xl transform rotate-45 drop-shadow-md">🗡️</span>;
+      case 'Defend': return <span className="text-blue-500 text-2xl drop-shadow-md">🛡️</span>;
+      case 'Buff': return <span className="text-green-500 text-2xl drop-shadow-md">⬆️</span>;
+      case 'Debuff': return <span className="text-purple-500 text-2xl drop-shadow-md">☠️</span>;
+      case 'AttackDefend': return <span className="text-2xl drop-shadow-md relative inline-block"><span className="text-red-500 transform rotate-45 inline-block">🗡️</span><span className="text-blue-500 text-[10px] absolute -bottom-1 -right-2 bg-slate-900 rounded-full w-4 h-4 flex items-center justify-center">🛡️</span></span>;
+      case 'AttackBuff': return <span className="text-2xl drop-shadow-md relative inline-block"><span className="text-red-500 transform rotate-45 inline-block">🗡️</span><span className="text-green-500 text-[10px] absolute -bottom-1 -right-2 bg-slate-900 rounded-full w-4 h-4 flex items-center justify-center">⬆️</span></span>;
+      case 'AttackDebuff': return <span className="text-2xl drop-shadow-md relative inline-block"><span className="text-red-500 transform rotate-45 inline-block">🗡️</span><span className="text-purple-500 text-[10px] absolute -bottom-1 -right-2 bg-slate-900 rounded-full w-4 h-4 flex items-center justify-center">☠️</span></span>;
+      case 'Unknown':
+      default: return <span className="text-gray-400 text-2xl drop-shadow-md">❓</span>;
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-[#0a0f1c] text-white overflow-hidden p-8 relative font-sans z-0">
@@ -400,9 +420,12 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         <div id="combat-enemy" className="flex flex-col items-center justify-end h-[32rem] z-10 w-64 relative">
           <div className="mb-4 flex flex-col items-center z-20 w-80 relative">
             {/* Intent floating near boss's weapon */}
-            <div className="absolute top-8 -left-12 bg-transparent text-white drop-shadow-md flex items-center gap-1 z-30">
-              <span className="text-red-500 text-2xl transform rotate-45">🗡️</span>
-              <span className="font-bold text-2xl">{intent.value || 18}</span>
+            <div className="absolute top-8 left-0 bg-slate-800/90 text-white drop-shadow-md flex items-center gap-2 z-30 px-3 py-1.5 rounded-xl border border-slate-600 shadow-lg">
+              {getIntentIcon(intent.type)}
+              <div className="flex flex-col ml-1 items-start justify-center">
+                <span className="font-bold text-xl leading-none">{intent.type === 'Unknown' ? '?' : (intent.value || '')}</span>
+                {intent.secondaryValue ? <span className="text-[10px] text-slate-300 font-bold leading-none mt-1">+{intent.secondaryValue}</span> : null}
+              </div>
             </div>
 
             <div className="text-3xl font-serif font-bold text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] mb-2 tracking-wide">
@@ -431,6 +454,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
               )}
               {gameState.currentEnemy.statusEffects?.['Vulnerable'] > 0 && (
                 <div className="text-purple-400 text-sm font-bold bg-slate-800/80 px-2 py-0.5 rounded shadow-sm">💔 {gameState.currentEnemy.statusEffects['Vulnerable']}</div>
+              )}
+              {gameState.currentEnemy.statusEffects?.['Strength'] > 0 && (
+                <div className="text-green-400 text-sm font-bold bg-slate-800/80 px-2 py-0.5 rounded shadow-sm">💪 {gameState.currentEnemy.statusEffects['Strength']}</div>
               )}
             </div>
           </div>
