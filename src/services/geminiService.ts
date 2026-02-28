@@ -102,7 +102,7 @@ Return the data strictly matching the provided JSON schema.`,
               maxHp: { type: Type.INTEGER },
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING, description: 'A visual description of the boss for image generation' },
+              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player' },
               audioPrompt: { type: Type.STRING, description: 'A description for a boss attacking sound effect' },
               narratorText: { type: Type.STRING, description: 'A dramatic opening dialogue line for the boss via text-to-speech module' },
               enrageThreshold: { type: Type.INTEGER, description: 'Percentage HP (0-100) when phase 2 starts' },
@@ -316,7 +316,7 @@ export async function preloadBackgroundImages(runData: RunData): Promise<void> {
 
   // Boss
   if (runData.boss && runData.boss.imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${runData.boss.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
+    promises.push(generateGameImage(`A character sprite of ${runData.boss.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
   }
 
   // We don't await this intentionally so it runs in the background

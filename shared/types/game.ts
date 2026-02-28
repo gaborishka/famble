@@ -10,6 +10,15 @@ export interface Card {
   tags: string[];
   audioPrompt?: string;
   imagePrompt?: string;
+  upgraded?: boolean;
+}
+
+export interface Relic {
+  id: string;
+  name: string;
+  description: string;
+  effect: 'MaxHP' | 'StartEnergy' | 'StartDraw' | 'StartStrength' | 'CombatHeal';
+  value: number;
 }
 
 export interface Intent {
@@ -63,7 +72,7 @@ export interface GameState {
 
 export interface MapNode {
   id: string;
-  type: 'Combat' | 'Event' | 'Shop' | 'Treasure' | 'Boss';
+  type: 'Combat' | 'Event' | 'Shop' | 'Treasure' | 'Boss' | 'Elite' | 'Campfire';
   x: number;
   y: number;
   row?: number; // Row index for tree layout (0 = start, max = boss)
@@ -79,6 +88,7 @@ export interface RunState {
   playerHp: number;
   playerMaxHp: number;
   gold: number;
+  relics: Relic[];
 }
 
 export interface RunData {

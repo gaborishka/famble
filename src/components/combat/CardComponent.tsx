@@ -20,7 +20,7 @@ export const CardComponent: React.FC<CardProps> = ({ card, disabled }) => {
   return (
     <motion.div
       className={`relative w-48 h-72 rounded-xl border-[4px] flex flex-col select-none transition-colors duration-200 group ${disabled ? 'opacity-50 grayscale border-slate-600 bg-slate-800 shadow-lg' : `${colors.border} bg-[#1e293b] shadow-2xl ${colors.shadow} hover:shadow-[0_0_30px_rgba(255,255,255,0.4)]`
-        }`}
+        } ${card.upgraded ? 'ring-4 ring-orange-400 ring-offset-2 ring-offset-slate-900' : ''}`}
       style={{ overflow: 'visible' }}
     >
       {/* Cost Badge */}
@@ -29,8 +29,10 @@ export const CardComponent: React.FC<CardProps> = ({ card, disabled }) => {
       </div>
 
       {/* Card Header (Ribbon-like) */}
-      <div className="bg-gradient-to-b from-[#f1f5f9] to-[#cbd5e1] border-b-[3px] border-[#94a3b8] px-2 py-2 text-center rounded-t-[7px] z-10 relative">
-        <h3 className="text-[#0f172a] font-black text-[13px] leading-tight line-clamp-1 drop-shadow-sm uppercase tracking-wide">{card.name}</h3>
+      <div className="bg-gradient-to-b from-[#f1f5f9] to-[#cbd5e1] border-b-[3px] border-[#94a3b8] px-2 py-2 text-center rounded-t-[7px] z-10 relative flex items-center justify-center gap-1">
+        <h3 className="text-[#0f172a] font-black text-[13px] leading-tight line-clamp-1 drop-shadow-sm uppercase tracking-wide">
+          {card.name}{card.upgraded && <span className="text-orange-600 text-[16px] leading-none">+</span>}
+        </h3>
       </div>
 
       {/* Card Image Area */}

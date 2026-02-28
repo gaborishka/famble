@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { RunData, MapNode, Card, Enemy, Boss } from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
 import { CombatArena } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
+import { generateFallbackNodeMap } from '../../engine/mapGenerator';
 
 interface RunManagerProps {
   runData: RunData;
@@ -12,105 +13,54 @@ interface RunManagerProps {
 export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
-  const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure'>('map');
+  const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
   const [deck, setDeck] = useState<Card[]>(runData.cards);
   const [playerHp, setPlayerHp] = useState(50);
   const [playerMaxHp, setPlayerMaxHp] = useState(50);
   const [gold, setGold] = useState(100);
   const [currentEnemy, setCurrentEnemy] = useState<Enemy | Boss | null>(null);
+  const [campfireAction, setCampfireAction] = useState<'choosing' | 'smithing'>('choosing');
 
   useEffect(() => {
     if (runData.node_map) {
-      setNodes(runData.node_map);
+      setNodes(runData.node_map.map(node => ({
+        ...node,
+        nextNodes: node.nextNodes ?? [],
+        completed: Boolean(node.completed),
+      })));
     } else {
-      // Generate a row-based tree map
-      const enemies = runData.enemies;
-      const pickEnemy = (i: number) => enemies[i % enemies.length];
-
-      const rowDefs: { types: MapNode['type'][]; data?: any[] }[] = [
-        // Row 0 (start): 3 nodes
-        { types: ['Combat', 'Event', 'Combat'], data: [pickEnemy(0), undefined, pickEnemy(1)] },
-        // Row 1: 4 nodes
-        { types: ['Combat', 'Shop', 'Shop', 'Treasure'], data: [pickEnemy(0), undefined, undefined, undefined] },
-        // Row 2: 4 nodes
-        { types: ['Combat', 'Event', 'Combat', 'Combat'], data: [pickEnemy(1), undefined, pickEnemy(0), pickEnemy(1)] },
-        // Row 3: 3 nodes
-        { types: ['Combat', 'Event', 'Combat'], data: [pickEnemy(0), undefined, pickEnemy(1)] },
-        // Row 4 (boss): 1 node
-        { types: ['Boss'], data: [runData.boss] },
-      ];
-
-      const allNodes: MapNode[] = [];
-      const rowNodeIds: string[][] = [];
-
-      rowDefs.forEach((rowDef, rowIdx) => {
-        const ids: string[] = [];
-        rowDef.types.forEach((type, colIdx) => {
-          const id = rowIdx === rowDefs.length - 1 ? 'boss' : `r${rowIdx}c${colIdx}`;
-          ids.push(id);
-          allNodes.push({
-            id,
-            type,
-            x: 0,
-            y: 0,
-            row: rowIdx,
-            nextNodes: [], // filled below
-            completed: false,
-            data: rowDef.data?.[colIdx],
-          });
-        });
-        rowNodeIds.push(ids);
-      });
-
-      // Connect each node to 1-2 nodes in the next row
-      for (let r = 0; r < rowNodeIds.length - 1; r++) {
-        const current = rowNodeIds[r];
-        const next = rowNodeIds[r + 1];
-
-        if (next.length === 1) {
-          // All connect to boss
-          current.forEach(id => {
-            const node = allNodes.find(n => n.id === id)!;
-            node.nextNodes = [next[0]];
-          });
-        } else {
-          // Each node connects to closest 1-2 nodes in next row
-          current.forEach((id, ci) => {
-            const node = allNodes.find(n => n.id === id)!;
-            const ratio = current.length > 1 ? ci / (current.length - 1) : 0.5;
-            const targetIdx = Math.round(ratio * (next.length - 1));
-            const targets = new Set<string>();
-            targets.add(next[targetIdx]);
-            // Add one neighbor for variety
-            if (targetIdx > 0 && Math.random() > 0.4) targets.add(next[targetIdx - 1]);
-            if (targetIdx < next.length - 1 && Math.random() > 0.4) targets.add(next[targetIdx + 1]);
-            node.nextNodes = Array.from(targets);
-          });
-
-          // Ensure every next-row node is reachable
-          next.forEach(nextId => {
-            const isReachable = current.some(id => allNodes.find(n => n.id === id)!.nextNodes.includes(nextId));
-            if (!isReachable) {
-              // Connect from closest current node
-              const nextIdx = next.indexOf(nextId);
-              const ratio = next.length > 1 ? nextIdx / (next.length - 1) : 0.5;
-              const closestIdx = Math.round(ratio * (current.length - 1));
-              allNodes.find(n => n.id === current[closestIdx])!.nextNodes.push(nextId);
-            }
-          });
-        }
-      }
-
-      setNodes(allNodes);
+      setNodes(generateFallbackNodeMap(runData));
     }
   }, [runData]);
+
+  const totalFloors = useMemo(() => {
+    if (nodes.length === 0) return 1;
+    const highestRow = nodes.reduce((maxRow, node) => {
+      const row = node.row ?? Math.round(node.y / 20);
+      return Math.max(maxRow, row);
+    }, 0);
+    return highestRow + 1;
+  }, [nodes]);
 
   const handleNodeSelect = (node: MapNode) => {
     setCurrentNodeId(node.id);
     switch (node.type) {
       case 'Combat':
+      case 'Elite':
       case 'Boss':
-        setCurrentEnemy(node.data);
+        // Generate an elite if it's an Elite node and no specific data was provided
+        if (node.type === 'Elite' && !node.data) {
+          setCurrentEnemy({
+            id: 'elite-1',
+            name: 'Corrupted Guardian',
+            maxHp: 80,
+            currentHp: 80,
+            description: 'A powerful elite foe.',
+            intents: [{ type: 'Attack', value: 15, description: 'Deals 15 damage.' }, { type: 'Defend', value: 12, description: 'Gains 12 block.' }]
+          });
+        } else {
+          setCurrentEnemy(node.data);
+        }
         setView('combat');
         break;
       case 'Event':
@@ -122,13 +72,17 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       case 'Treasure':
         setView('treasure');
         break;
+      case 'Campfire':
+        setCampfireAction('choosing');
+        setView('campfire');
+        break;
     }
   };
 
   const handleCombatVictory = (hp: number) => {
     setPlayerHp(hp);
     setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
-    
+
     if (currentEnemy === runData.boss) {
       // Victory!
       alert('Victory!');
@@ -153,6 +107,20 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     setView('map');
   };
 
+  const handleCardUpgrade = (cardIndex: number) => {
+    setDeck(prev => prev.map((c, idx) => {
+      if (idx !== cardIndex || c.upgraded) return c;
+      return {
+        ...c,
+        upgraded: true,
+        damage: typeof c.damage === 'number' ? c.damage + 3 : c.damage,
+        block: typeof c.block === 'number' ? c.block + 3 : c.block,
+        cost: c.type === 'Power' ? Math.max(0, c.cost - 1) : c.cost
+      };
+    }));
+    handleEventComplete();
+  };
+
   const handleEventComplete = () => {
     setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
     setView('map');
@@ -168,7 +136,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
         playerMaxHp={playerMaxHp}
         gold={gold}
         bossName={runData.boss.name}
-        totalFloors={5}
+        totalFloors={totalFloors}
       />
     );
   }
@@ -255,6 +223,101 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
         >
           Open
         </button>
+      </div>
+    );
+  }
+
+  if (view === 'campfire') {
+    const upgradableCards = deck.filter(card => !card.upgraded);
+
+    return (
+      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-center p-8 text-white relative">
+        <div className="absolute inset-0 pointer-events-none flex items-center justify-center opacity-20">
+          <div className="w-64 h-64 bg-orange-600 rounded-full blur-[100px] animate-pulse"></div>
+        </div>
+
+        <h2 className="text-5xl font-bold mb-12 relative z-10 text-orange-400">Rest Site</h2>
+
+        {campfireAction === 'choosing' ? (
+          <div className="flex gap-8 relative z-10">
+            <button
+              onClick={() => {
+                const heal = Math.floor(playerMaxHp * 0.3);
+                setPlayerHp(h => Math.min(playerMaxHp, h + heal));
+                handleEventComplete();
+              }}
+              className="flex flex-col items-center justify-center w-48 h-48 bg-emerald-900/40 hover:bg-emerald-800/60 border-2 border-emerald-500/50 hover:border-emerald-400 rounded-2xl transition-all group"
+            >
+              <span className="text-4xl mb-4 group-hover:scale-110 transition-transform">💤</span>
+              <span className="text-2xl font-bold text-white mb-2">Rest</span>
+              <span className="text-sm text-emerald-300">Heal {Math.floor(playerMaxHp * 0.3)} HP</span>
+            </button>
+
+            <button
+              onClick={() => setCampfireAction('smithing')}
+              className="flex flex-col items-center justify-center w-48 h-48 bg-amber-900/40 hover:bg-amber-800/60 border-2 border-amber-500/50 hover:border-amber-400 rounded-2xl transition-all group"
+            >
+              <span className="text-4xl mb-4 group-hover:scale-110 transition-transform">🔨</span>
+              <span className="text-2xl font-bold text-white mb-2">Smith</span>
+              <span className="text-sm text-amber-300">Upgrade a card</span>
+            </button>
+          </div>
+        ) : (
+          <div className="relative z-10 w-full max-w-4xl">
+            <div className="text-center mb-6">
+              <h3 className="text-2xl font-semibold text-amber-300">Choose a card to upgrade</h3>
+              <p className="text-slate-300 mt-2">Attack/Skill: +3 value, Power: -1 cost (min 0)</p>
+            </div>
+
+            {upgradableCards.length === 0 ? (
+              <div className="bg-slate-900/70 border border-slate-700 rounded-xl p-6 text-center">
+                <p className="text-lg text-slate-200 mb-4">All cards are already upgraded.</p>
+                <button
+                  onClick={handleEventComplete}
+                  className="px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold transition-colors"
+                >
+                  Continue
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[420px] overflow-auto pr-1">
+                  {deck.map((card, idx) => (
+                    <button
+                      key={`${card.id}-${idx}`}
+                      onClick={() => handleCardUpgrade(idx)}
+                      disabled={card.upgraded}
+                      className={`text-left p-4 rounded-xl border transition-all ${
+                        card.upgraded
+                          ? 'bg-slate-900/50 border-slate-700 text-slate-500 cursor-not-allowed'
+                          : 'bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40 hover:border-amber-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-bold text-lg">{card.name}{card.upgraded ? ' +' : ''}</span>
+                        <span className="text-sm text-slate-300">{card.type} • Cost {card.cost}</span>
+                      </div>
+                      <div className="text-sm text-slate-200 space-x-3">
+                        {typeof card.damage === 'number' && <span>DMG {card.damage}</span>}
+                        {typeof card.block === 'number' && <span>BLK {card.block}</span>}
+                        {typeof card.damage !== 'number' && typeof card.block !== 'number' && <span>Utility card</span>}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="mt-6 flex justify-center">
+                  <button
+                    onClick={() => setCampfireAction('choosing')}
+                    className="px-6 py-3 bg-slate-800 hover:bg-slate-700 rounded-lg font-bold transition-colors"
+                  >
+                    Back
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     );
   }

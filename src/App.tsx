@@ -10,10 +10,15 @@ import { RunData } from '../shared/types/game';
 
 export default function App() {
   const [runData, setRunData] = useState<RunData | null>(null);
+  const isLoadingPreviewRoute =
+    typeof window !== 'undefined' &&
+    (window.location.pathname === '/loading-preview' || window.location.pathname === '/loading-preview/');
 
   return (
     <div className="min-h-screen bg-slate-950">
-      {runData ? (
+      {isLoadingPreviewRoute ? (
+        <Generator onGenerated={() => undefined} forceLoadingPreview />
+      ) : runData ? (
         <RunManager runData={runData} onReset={() => setRunData(null)} />
       ) : (
         <Generator onGenerated={(data) => setRunData(data)} />

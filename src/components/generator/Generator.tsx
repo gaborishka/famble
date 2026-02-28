@@ -3,10 +3,11 @@ import { RunData } from '../../../shared/types/game';
 import { generateRunData, preloadFirstCombatImages, preloadBackgroundImages, setCurrentRunId } from '../../services/geminiService';
 import { preloadRunAudio } from '../../services/audioService';
 import { motion, AnimatePresence } from 'motion/react';
-import { FileUp, Globe, ArrowRight, Loader2, Sparkles, FileText, Check } from 'lucide-react';
+import { FileUp, Globe, ArrowRight, Sparkles, FileText, Check } from 'lucide-react';
 
 interface GeneratorProps {
   onGenerated: (data: RunData) => void;
+  forceLoadingPreview?: boolean;
 }
 
 interface LoadingView {
@@ -104,18 +105,27 @@ const loadingViewsByMessage: Record<string, LoadingView> = {
   }
 };
 
-const swirlingDeckCards = Array.from({ length: 10 }, (_, index) => ({
-  id: `deck-${index}`,
-  baseAngle: index * 36
-}));
+const forcedPreviewLoadingView: LoadingView = {
+  title: 'Shuffling your adventure...',
+  subtitle: 'Building a unique run from your document',
+  progress: 45,
+  stepLabel: 'Creating cards and enemies...',
+  step: 2,
+  totalSteps: 6,
+  caption: "Your document holds secrets. Let's deal them out.",
+  finePrint: 'This usually takes 30-60 seconds'
+};
 
-const orbitingCards = [
-  { id: 'left', x: '20%', y: '58%', border: '#ec5f53', glow: 'rgba(236,95,83,0.55)', rotate: -24, delay: 0 },
-  { id: 'right', x: '80%', y: '56%', border: '#4fb0f2', glow: 'rgba(79,176,242,0.45)', rotate: 16, delay: 0.2 },
-  { id: 'bottom', x: '70%', y: '86%', border: '#a16bff', glow: 'rgba(161,107,255,0.45)', rotate: -14, delay: 0.4 }
+const SHUFFLE_CARD_COUNT = 10;
+const SHUFFLE_HALF = SHUFFLE_CARD_COUNT / 2;
+
+const floatingPreviewCards = [
+  { id: 'top-left', x: '28%', y: '16%', rotate: -2, border: '#7ec8ff', delay: 0 },
+  { id: 'top-right', x: '74%', y: '14%', rotate: 20, border: '#b88dff', delay: 0.4 },
+  { id: 'bottom-right', x: '70%', y: '76%', rotate: 40, border: '#f07a66', delay: 0.2 }
 ];
 
-export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
+export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingPreview = false }) => {
   const [prompt, setPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Generating Run...');
@@ -139,6 +149,9 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
     () => loadingViewsByMessage[loadingMessage] ?? defaultLoadingView,
     [loadingMessage]
   );
+  const activeLoadingView = forceLoadingPreview ? forcedPreviewLoadingView : loadingView;
+  const overlayVisible = forceLoadingPreview || isGenerating;
+  const previewFileName = forceLoadingPreview ? null : uploadedFileName;
 
   const handleGenerateText = async () => {
     if (!prompt) {
@@ -370,7 +383,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
       </div>
 
       <AnimatePresence>
-        {isGenerating && (
+        {overlayVisible && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -378,132 +391,123 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated }) => {
             className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-[#040a25]/90 backdrop-blur-sm text-white"
           >
             <div className="pointer-events-none absolute inset-0">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,120,60,0.08)_0%,rgba(31,56,103,0.24)_36%,rgba(4,10,37,0.96)_84%)]" />
-              <div className="absolute left-1/2 top-1/2 h-[720px] w-[720px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,128,69,0.22)_0%,rgba(18,44,96,0.12)_46%,rgba(4,10,37,0)_72%)] blur-2xl" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,132,78,0.10)_0%,rgba(27,52,94,0.25)_40%,rgba(4,10,37,0.96)_85%)]" />
+              <div className="absolute left-1/2 top-1/2 h-[760px] w-[760px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(255,129,72,0.18)_0%,rgba(22,46,92,0.11)_45%,rgba(4,10,37,0)_72%)] blur-2xl" />
+              <div className="absolute -right-2 bottom-10 h-9 w-9 rotate-45 rounded-md bg-slate-100/80 opacity-80 shadow-[0_0_16px_rgba(255,255,255,0.25)]" />
             </div>
 
-            <div className="relative z-10 w-full max-w-[760px] px-6 sm:px-8">
-              <div className="mx-auto max-w-[560px] text-center pb-5">
-                {uploadedFileName && (
-                  <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-[#4e6f97] bg-[#1b3256]/80 px-5 py-2.5 text-sm text-slate-100 shadow-[0_0_22px_rgba(42,77,123,0.5)]">
+            <div className="relative z-10 w-full max-w-[820px] px-5 sm:px-8">
+              <div className="mx-auto max-w-[680px] text-center pb-6">
+                {previewFileName && (
+                  <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-[#4f7199] bg-[#1a3154]/85 px-5 py-2.5 text-sm text-slate-100 shadow-[0_0_22px_rgba(42,77,123,0.45)]">
                     <FileText className="h-4 w-4 text-slate-200" />
-                    <span className="max-w-[290px] truncate">{uploadedFileName}</span>
+                    <span className="max-w-[290px] truncate">{previewFileName}</span>
                     <Check className="h-4 w-4 text-emerald-300" />
                   </div>
                 )}
 
-                <div className="relative mx-auto mb-9 h-[280px] w-full max-w-[560px] sm:h-[320px]">
+                <div className="relative mx-auto mb-2 h-[330px] w-full max-w-[520px] sm:h-[390px] sm:max-w-[620px]">
                   <motion.div
                     animate={{ rotate: 360 }}
-                    transition={{ duration: 16, repeat: Infinity, ease: 'linear' }}
-                    className="absolute left-1/2 top-1/2 h-[250px] w-[390px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(ellipse_at_center,rgba(255,128,65,0.42)_0%,rgba(247,101,54,0.18)_38%,rgba(247,101,54,0.04)_68%,rgba(0,0,0,0)_100%)] blur-[1.5px]"
+                    transition={{ duration: 20, repeat: Infinity, ease: 'linear' }}
+                    className="absolute left-1/2 top-1/2 h-[285px] w-[440px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(ellipse_at_center,rgba(255,127,70,0.34)_0%,rgba(247,106,59,0.16)_40%,rgba(0,0,0,0)_75%)] blur-[1.5px]"
                   />
+                  <div className="absolute left-1/2 top-1/2 h-[280px] w-[280px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#f27a52]/20" />
 
-                  <motion.div
-                    animate={{ rotate: [0, 360] }}
-                    transition={{ duration: 19, repeat: Infinity, ease: 'linear' }}
-                    className="absolute inset-0"
-                  >
-                    {orbitingCards.map((card) => (
+                  {floatingPreviewCards.map((card) => (
+                    <motion.div
+                      key={card.id}
+                      style={{
+                        left: card.x,
+                        top: card.y,
+                        transform: `translate(-50%, -50%) rotate(${card.rotate}deg)`,
+                        borderColor: card.border
+                      }}
+                      animate={{ y: [0, -6, 0], rotate: [card.rotate, card.rotate + 2, card.rotate] }}
+                      transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut', delay: card.delay }}
+                      className="absolute h-[92px] w-[66px] rounded-md border-2 bg-[#234166] shadow-[0_10px_20px_rgba(0,0,0,0.42)]"
+                    >
+                      <div className="absolute inset-[7px] rounded-[3px] border border-[#8ca7c6]/50" />
+                    </motion.div>
+                  ))}
+
+                  {/* Card Shuffle (Riffle) Animation */}
+                  {Array.from({ length: SHUFFLE_CARD_COUNT }, (_, i) => {
+                    const isLeft = i < SHUFFLE_HALF;
+                    const pileIdx = isLeft ? i : i - SHUFFLE_HALF;
+                    const riffleOrder = isLeft ? i * 2 : (i - SHUFFLE_HALF) * 2 + 1;
+
+                    const splitX = isLeft ? -105 : 105;
+                    const stackY = i * -2;
+                    const pileY = pileIdx * -3;
+
+                    const riffleStart = 0.35 + riffleOrder * 0.035;
+                    const riffleMid = riffleStart + 0.035;
+                    const riffleEnd = riffleMid + 0.035;
+
+                    return (
                       <motion.div
-                        key={card.id}
-                        style={{ left: card.x, top: card.y }}
+                        key={`shuffle-${i}`}
                         animate={{
-                          rotate: [card.rotate, card.rotate + 9, card.rotate - 4, card.rotate],
-                          y: [0, -7, 0]
+                          x: [0, splitX, splitX, splitX * 0.3, 0, 0],
+                          y: [stackY, pileY, pileY, pileY - 60, stackY, stackY],
+                          rotateZ: [0, isLeft ? -15 : 15, isLeft ? -15 : 15, isLeft ? -5 : 5, 0, 0],
+                          scale: [1, 1, 1, 1.08, 1, 1],
                         }}
                         transition={{
-                          duration: 2.9,
+                          duration: 4,
                           repeat: Infinity,
-                          ease: 'easeInOut',
-                          delay: card.delay
+                          times: [0, 0.20, riffleStart, riffleMid, riffleEnd, 1],
+                          ease: ['easeOut', 'linear', 'easeOut', 'easeIn', 'linear'],
                         }}
-                        className="absolute h-24 w-16 rounded-md border-2 bg-[#1c2f4e] shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
+                        style={{ zIndex: riffleOrder + 1 }}
+                        className="absolute left-1/2 top-1/2 h-[136px] w-[94px] -translate-x-1/2 -translate-y-1/2 rounded-lg border border-[#5a7fa8] bg-gradient-to-br from-[#1a3d64] to-[#142d4d] shadow-[0_4px_16px_rgba(0,0,0,0.45)]"
                       >
-                        <div
-                          className="absolute inset-0 rounded-md"
-                          style={{ boxShadow: `0 0 18px ${card.glow}` }}
-                        />
-                        <div className="absolute inset-[7px] rounded-[3px] border border-[#6f8db0]/45">
-                          <div className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-[#6f8db0]/40" />
-                        </div>
-                        <div
-                          className="absolute left-0 top-0 h-[4px] w-full rounded-t-md"
-                          style={{ backgroundColor: card.border }}
-                        />
-                      </motion.div>
-                    ))}
-                  </motion.div>
-
-                  <motion.div
-                    animate={{ rotate: [0, -360] }}
-                    transition={{ duration: 11, repeat: Infinity, ease: 'linear' }}
-                    className="absolute left-1/2 top-1/2 h-[260px] w-[260px] -translate-x-1/2 -translate-y-1/2"
-                  >
-                    {swirlingDeckCards.map((card, index) => (
-                      <motion.div
-                        key={card.id}
-                        animate={{
-                          rotate: [card.baseAngle - 7, card.baseAngle + 9, card.baseAngle - 7],
-                          y: [0, -4, 0],
-                          scale: [1, 1.03, 1]
-                        }}
-                        transition={{
-                          duration: 2.2,
-                          repeat: Infinity,
-                          ease: 'easeInOut',
-                          delay: index * 0.08
-                        }}
-                        style={{ transformOrigin: '50% 86%', zIndex: 20 - index }}
-                        className="absolute left-1/2 top-1/2 h-36 w-[95px] -translate-x-1/2 -translate-y-1/2 rounded-md border border-[#607895] bg-[#132640] shadow-[0_8px_20px_rgba(0,0,0,0.35)]"
-                      >
-                        <div className="absolute inset-[7px] rounded-[4px] border border-[#5f7794]/45">
-                          <div className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-[#5f7794]/38" />
+                        <div className="absolute inset-[6px] rounded-[5px] border border-[#7a9dbe]/35">
+                          <div className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-[#ff8455]/30" />
                         </div>
                       </motion.div>
-                    ))}
-                  </motion.div>
-
-                  <div className="absolute left-1/2 top-1/2 h-8 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[#ff7f4f] shadow-[0_0_36px_rgba(255,127,79,0.85)]" />
-                  <div className="absolute left-1/2 top-1/2 h-[300px] w-[300px] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#f48051]/20" />
+                    );
+                  })}
                 </div>
 
-                <h2 className="text-4xl sm:text-6xl font-serif font-semibold tracking-tight text-slate-100 mb-2">
-                  {loadingView.title}
+                <h2 className="mx-auto max-w-[560px] text-[clamp(2.2rem,4vw,4.4rem)] font-serif font-semibold leading-[0.95] tracking-tight text-slate-100">
+                  {activeLoadingView.title}
                 </h2>
-                <p className="text-base sm:text-[38px] text-slate-400 mb-7">
-                  {loadingView.subtitle}
+                <p className="mx-auto mt-4 max-w-[560px] text-[clamp(1.05rem,1.35vw,1.6rem)] leading-[1.24] text-slate-400">
+                  {activeLoadingView.subtitle}
                 </p>
 
-                <div className="mx-auto w-full">
-                  <div className="relative h-7 rounded-full border border-[#2f5a86]/80 bg-[#1a3356]/60 px-1 py-1 shadow-[inset_0_2px_12px_rgba(0,0,0,0.45)]">
+                <div className="mx-auto mt-8 w-full max-w-[640px]">
+                  <div className="relative h-8 rounded-full border border-[#2f5a86]/80 bg-[#193255]/65 px-1 py-1 shadow-[inset_0_2px_12px_rgba(0,0,0,0.45)]">
                     <motion.div
-                      initial={{ width: '0%' }}
-                      animate={{ width: `${loadingView.progress}%` }}
+                      initial={{ width: forceLoadingPreview ? `${activeLoadingView.progress}%` : '0%' }}
+                      animate={{ width: `${activeLoadingView.progress}%` }}
                       transition={{ duration: 0.8, ease: 'easeOut' }}
-                      className="h-full rounded-full bg-gradient-to-r from-[#ff603b] via-[#ff7447] to-[#ff9d5f] shadow-[0_0_20px_rgba(255,115,67,0.45)]"
+                      className="h-full rounded-full bg-gradient-to-r from-[#ff5f3b] via-[#ff7648] to-[#ff9f60] shadow-[0_0_24px_rgba(255,118,72,0.45)]"
                     />
                   </div>
-                  <div className="mt-1 text-right text-xl sm:text-[20px] font-medium text-slate-300/90">
-                    {loadingView.progress}%
+                  <div className="mt-1 text-right text-[clamp(1.2rem,1.3vw,1.65rem)] font-medium text-slate-300/90">
+                    {activeLoadingView.progress}%
                   </div>
                 </div>
 
                 <div className="mt-5">
-                  <div className="flex items-center justify-center gap-3 text-[#ff8252] text-2xl sm:text-[28px] leading-tight">
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    <span>{loadingView.stepLabel}</span>
+                  <div className="flex items-center justify-center gap-3 text-[clamp(1.25rem,1.45vw,1.7rem)] leading-tight text-[#ff8252]">
+                    <motion.span
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1.15, repeat: Infinity, ease: 'linear' }}
+                      className="h-6 w-6 rounded-full border-[3px] border-[#ff8252] border-b-transparent"
+                    />
+                    <span>{activeLoadingView.stepLabel}</span>
                   </div>
-                  <div className="mt-1 text-base sm:text-[20px] leading-tight text-slate-300/80">
-                    {loadingView.step} of {loadingView.totalSteps} steps complete
+                  <div className="mt-1 text-[clamp(0.98rem,1.05vw,1.25rem)] leading-tight text-slate-300/80">
+                    {activeLoadingView.step} of {activeLoadingView.totalSteps} steps complete
                   </div>
                 </div>
 
-                <div className="mt-7 text-slate-300/80 text-2xl sm:text-[54px] leading-tight italic">
-                  {loadingView.caption}
-                </div>
-                <div className="mt-3 text-slate-400/80 text-sm sm:text-[24px]">
-                  {loadingView.finePrint}
+                <div className="mt-3 text-[clamp(0.9rem,0.95vw,1.1rem)] text-slate-400/80">
+                  {activeLoadingView.finePrint}
                 </div>
               </div>
             </div>
