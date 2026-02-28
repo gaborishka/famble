@@ -9,3 +9,6 @@ coverage/
 
 # Generated Game Assets
 public/runs/
+.playwright-cli/
+output/
+.idea/

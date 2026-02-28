@@ -6,6 +6,14 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 let currentRunId = '';
 
+export function getCurrentRunId(): string {
+  return currentRunId;
+}
+
+export function setCurrentRunId(id: string) {
+  currentRunId = id;
+}
+
 export async function generateRunData(prompt: string, fileData?: { mimeType: string; data: string }): Promise<RunData> {
   currentRunId = Date.now().toString();
   const parts: any[] = [{ text: prompt }];
@@ -30,6 +38,8 @@ Create 5 cards (mix of Attack, Skill, Power), 2 normal enemies, 1 boss, and 1 sy
 Cards should cost between 0 and 3 energy.
 Player starts with 50 HP and 3 Energy.
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
+For audio, follow the thematic instructions provided by the user (or extrapolate based on Cooking, Legal, Science themes).
+Boss must include a 'narratorText' which is a dramatic opening line the boss will say when encountered.
 Return the data strictly matching the provided JSON schema.`,
       responseMimeType: 'application/json',
       responseSchema: {
@@ -50,9 +60,10 @@ Return the data strictly matching the provided JSON schema.`,
                 block: { type: Type.INTEGER },
                 magicNumber: { type: Type.INTEGER },
                 tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-                imagePrompt: { type: Type.STRING, description: 'A visual description of the card for image generation' }
+                imagePrompt: { type: Type.STRING, description: 'A visual description of the card for image generation' },
+                audioPrompt: { type: Type.STRING, description: 'A description for elevenlabs sound effect generation (e.g. "Sword clash", "Magic spell")' }
               },
-              required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt']
+              required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt']
             }
           },
           enemies: {
@@ -66,6 +77,7 @@ Return the data strictly matching the provided JSON schema.`,
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
                 imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation' },
+                audioPrompt: { type: Type.STRING, description: 'A description for elevenlabs sound effect of the enemy attacking' },
                 intents: {
                   type: Type.ARRAY,
                   items: {
@@ -79,7 +91,7 @@ Return the data strictly matching the provided JSON schema.`,
                   }
                 }
               },
-              required: ['id', 'name', 'maxHp', 'currentHp', 'description', 'intents', 'imagePrompt']
+              required: ['id', 'name', 'maxHp', 'currentHp', 'description', 'intents', 'imagePrompt', 'audioPrompt']
             }
           },
           boss: {
@@ -91,6 +103,8 @@ Return the data strictly matching the provided JSON schema.`,
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
               imagePrompt: { type: Type.STRING, description: 'A visual description of the boss for image generation' },
+              audioPrompt: { type: Type.STRING, description: 'A description for a boss attacking sound effect' },
+              narratorText: { type: Type.STRING, description: 'A dramatic opening dialogue line for the boss via text-to-speech module' },
               enrageThreshold: { type: Type.INTEGER, description: 'Percentage HP (0-100) when phase 2 starts' },
               intents: {
                 type: Type.ARRAY,
@@ -117,7 +131,7 @@ Return the data strictly matching the provided JSON schema.`,
                 }
               }
             },
-            required: ['id', 'name', 'maxHp', 'currentHp', 'description', 'enrageThreshold', 'intents', 'phase2Intents', 'imagePrompt']
+            required: ['id', 'name', 'maxHp', 'currentHp', 'description', 'enrageThreshold', 'intents', 'phase2Intents', 'imagePrompt', 'audioPrompt', 'narratorText']
           },
           synergies: {
             type: Type.ARRAY,
@@ -133,9 +147,11 @@ Return the data strictly matching the provided JSON schema.`,
               },
               required: ['name', 'tag', 'threshold', 'effect', 'value', 'description']
             }
-          }
+          },
+          roomMusicPrompt: { type: Type.STRING, description: 'Brief description for the normal combat background music' },
+          bossMusicPrompt: { type: Type.STRING, description: 'Brief description for the boss combat background music' }
         },
-        required: ['theme', 'cards', 'enemies', 'boss', 'synergies']
+        required: ['theme', 'cards', 'enemies', 'boss', 'synergies', 'roomMusicPrompt', 'bossMusicPrompt']
       }
     }
   });
@@ -145,7 +161,14 @@ Return the data strictly matching the provided JSON schema.`,
     throw new Error('No response from Gemini');
   }
 
-  return JSON.parse(text) as RunData;
+  const runData = JSON.parse(text) as RunData;
+  fetch('/api/save-run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runId: currentRunId, runData })
+  }).catch(err => console.error('Failed to auto-save run data locally:', err));
+
+  return runData;
 }
 
 const imageCache = new Map<string, string>();
@@ -159,6 +182,23 @@ export async function generateGameImage(prompt: string, type: 'asset' | 'backgro
 
   if (pendingRequests.has(cacheKey)) {
     return pendingRequests.get(cacheKey)!;
+  }
+
+  if (currentRunId) {
+    const sanitizedPrompt = prompt.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
+    const fileName = `${type}_${sanitizedPrompt}.png`;
+    try {
+      const res = await fetch(`/api/check-file?runId=${currentRunId}&fileName=${fileName}`);
+      if (res.ok) {
+        const { exists, url } = await res.json();
+        if (exists) {
+          imageCache.set(cacheKey, url);
+          return url;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to check for existing image file:', e);
+    }
   }
 
   let prefix = "A 2D vector art style game asset, clean lines, flat colors, highly detailed, fantasy game UI element. ";
@@ -207,9 +247,9 @@ export async function generateGameImage(prompt: string, type: 'asset' | 'backgro
         // Save image to local filesystem via dev server plugin
         if (currentRunId) {
           const sanitizedPrompt = prompt.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
-          const fileName = `${type}_${sanitizedPrompt}_${Date.now()}.png`;
+          const fileName = `${type}_${sanitizedPrompt}.png`;
 
-          fetch('/api/save-image', {
+          fetch('/api/save-file', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',

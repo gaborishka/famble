@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { GameState, Card, Enemy, Boss, RunData } from '../../../shared/types/game';
 import { initializeCombat, endTurn } from '../../engine/combatEngine';
 import { resolveCard } from '../../engine/cardResolver';
 import { checkSynergies } from '../../engine/synergyEngine';
 import { HandDisplay } from './HandDisplay';
 import { getNextIntent } from '../../engine/enemyAI';
+import { generateSoundEffect, generateMusic, generateBossTTS } from '../../services/audioService';
+import { Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameImage } from '../GameImage';
 
@@ -49,6 +51,24 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   const [playerAnim, setPlayerAnim] = useState<string>('idle');
   const [enemyAnim, setEnemyAnim] = useState<string>('idle');
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(() => {
+    const saved = localStorage.getItem('famble_music_playing');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+  const isMusicPlayingRef = useRef(isMusicPlaying);
+  const bgmRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    isMusicPlayingRef.current = isMusicPlaying;
+    localStorage.setItem('famble_music_playing', JSON.stringify(isMusicPlaying));
+    if (bgmRef.current) {
+      if (isMusicPlaying) {
+        bgmRef.current.play().catch(e => console.log('Audio autoplay prevented', e));
+      } else {
+        bgmRef.current.pause();
+      }
+    }
+  }, [isMusicPlaying]);
 
   useEffect(() => {
     const state = initializeCombat(deck, enemy);
@@ -57,12 +77,67 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     setGameState(state);
   }, [deck, enemy, playerHp, playerMaxHp]);
 
+  useEffect(() => {
+    let isCancelled = false;
+
+    // Clean up previous music before starting new
+    if (bgmRef.current) {
+      bgmRef.current.pause();
+      bgmRef.current.src = '';
+      bgmRef.current = null;
+    }
+
+    // Start background music
+    const prmpt = (enemy as Boss).enrageThreshold ? runData.bossMusicPrompt : runData.roomMusicPrompt;
+    if (prmpt) {
+      generateMusic(prmpt).then(url => {
+        if (isCancelled || !url) return;
+        const audio = new Audio(url);
+        audio.loop = true;
+        audio.volume = 0.2; // Lowered volume to make it more ambient
+        bgmRef.current = audio;
+        if (isMusicPlayingRef.current) {
+          audio.play().catch(e => console.log('Audio autoplay prevented', e));
+        }
+      });
+    }
+
+    return () => {
+      isCancelled = true;
+      if (bgmRef.current) {
+        bgmRef.current.pause();
+        bgmRef.current.src = '';
+      }
+    };
+  }, [enemy, runData]);
+
+  // Boss TTS Effect
+  useEffect(() => {
+    const boss = enemy as Boss;
+    if (boss.enrageThreshold && boss.narratorText) {
+      generateBossTTS(boss.narratorText, runData.theme).then(url => {
+        if (!url) return;
+        const audio = new Audio(url);
+        audio.volume = 0.8;
+        if (isMusicPlayingRef.current) {
+          audio.play().catch(e => console.log('Boss TTS autoplay prevented', e));
+        }
+      });
+    }
+  }, [enemy, runData.theme]);
+
   if (!gameState || !gameState.currentEnemy) {
     return <div className="text-white">Loading combat...</div>;
   }
 
   const handlePlayCard = (card: Card) => {
-    if (card.cost > gameState.energy || isGameOver || isVictory) return;
+    if (card.cost > gameState.energy || isGameOver) return;
+
+    if (card.audioPrompt) {
+      generateSoundEffect(card.audioPrompt).then(url => {
+        if (url) new Audio(url).play().catch(e => console.log('Audio autoplay prevented', e));
+      });
+    }
 
     // Trigger animation based on card type
     if (card.type === 'Attack') {
@@ -127,7 +202,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
     // Check enemy death
     if (newState.currentEnemy && newState.currentEnemy.currentHp <= 0) {
-      setTimeout(() => setIsVictory(true), 500);
+      setTimeout(() => onVictory(newState.playerHp), 1500);
       setGameState(newState);
     } else {
       setGameState(newState);
@@ -135,10 +210,16 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   };
 
   const handleEndTurn = () => {
-    if (isGameOver || isVictory) return;
+    if (isGameOver) return;
 
     const intent = getNextIntent(gameState.currentEnemy!, gameState.turn);
     if (intent && intent.type === 'Attack') {
+      if (gameState.currentEnemy!.audioPrompt) {
+        generateSoundEffect(gameState.currentEnemy!.audioPrompt).then(url => {
+          if (url) new Audio(url).play().catch(e => console.log('Audio autoplay prevented', e));
+        });
+      }
+
       setEnemyAnim('attack');
       setTimeout(() => setEnemyAnim('idle'), 400);
 
@@ -215,22 +296,6 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             </button>
           </motion.div>
         )}
-        {isVictory && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="absolute inset-0 bg-black/80 z-[100] flex flex-col items-center justify-center"
-          >
-            <h1 className="text-6xl font-bold text-yellow-400 mb-4">VICTORY!</h1>
-            <p className="text-xl text-slate-300 mb-8">You defeated {enemy.name}!</p>
-            <button
-              onClick={() => onVictory(gameState.playerHp)}
-              className="px-8 py-4 bg-yellow-600 hover:bg-yellow-500 text-white font-bold rounded-xl shadow-lg transition-colors"
-            >
-              Continue
-            </button>
-          </motion.div>
-        )}
       </AnimatePresence>
 
       {/* Top HUD */}
@@ -269,6 +334,12 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
       {/* Top Right: Gold and Settings */}
       <div className="absolute top-6 right-6 z-50 flex items-center gap-4 text-yellow-400 font-bold drop-shadow-md text-lg">
+        <button
+          onClick={() => setIsMusicPlaying(!isMusicPlaying)}
+          className="w-10 h-10 bg-[#1a2035] rounded-full border-2 border-[#334155] shadow-lg flex items-center justify-center hover:bg-[#334155] transition-colors text-white mr-2"
+        >
+          {isMusicPlaying ? <Volume2 className="w-5 h-5" /> : <VolumeX className="w-5 h-5 text-slate-500" />}
+        </button>
         <div className="w-6 h-6 bg-gradient-to-br from-yellow-300 to-yellow-600 rounded-full flex items-center justify-center text-yellow-900 text-sm shadow-md">
           $
         </div>
@@ -425,7 +496,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
           <button
             onClick={handleEndTurn}
-            disabled={isGameOver || isVictory}
+            disabled={isGameOver}
             className="px-10 py-4 mb-2 bg-gradient-to-b from-[#f97316] to-[#c2410c] hover:from-[#fb923c] hover:to-[#ea580c] disabled:from-slate-700 disabled:to-slate-800 disabled:text-slate-500 text-white font-bold rounded-lg shadow-[0_5px_15px_rgba(234,88,12,0.4)] border border-[#fdba74]/30 active:translate-y-1 transition-all text-base tracking-widest uppercase overflow-hidden relative"
           >
             <div className="absolute inset-x-0 top-0 h-1/2 bg-white/10 pointer-events-none" />

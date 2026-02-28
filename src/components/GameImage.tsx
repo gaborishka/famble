@@ -21,7 +21,7 @@ export const GameImage: React.FC<GameImageProps> = ({ prompt, className = '', al
     setLoading(true);
     setError(false);
 
-    generateGameImage(prompt, type)
+    generateGameImage(prompt, type as 'asset' | 'background' | 'character')
       .then(url => {
         if (isMounted) {
           setImageUrl(url);

@@ -23,17 +23,85 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     if (runData.node_map) {
       setNodes(runData.node_map);
     } else {
-      // Generate a simple map
-      const generatedNodes: MapNode[] = [
-        { id: 'start', type: 'Combat', x: 50, y: 0, nextNodes: ['n1', 'n2'], completed: false, data: runData.enemies[0] },
-        { id: 'n1', type: 'Event', x: 30, y: 20, nextNodes: ['n3'], completed: false },
-        { id: 'n2', type: 'Combat', x: 70, y: 20, nextNodes: ['n3', 'n4'], completed: false, data: runData.enemies[1] || runData.enemies[0] },
-        { id: 'n3', type: 'Treasure', x: 40, y: 40, nextNodes: ['n5'], completed: false },
-        { id: 'n4', type: 'Shop', x: 80, y: 40, nextNodes: ['n5'], completed: false },
-        { id: 'n5', type: 'Combat', x: 60, y: 60, nextNodes: ['boss'], completed: false, data: runData.enemies[0] },
-        { id: 'boss', type: 'Boss', x: 50, y: 100, nextNodes: [], completed: false, data: runData.boss },
+      // Generate a row-based tree map
+      const enemies = runData.enemies;
+      const pickEnemy = (i: number) => enemies[i % enemies.length];
+
+      const rowDefs: { types: MapNode['type'][]; data?: any[] }[] = [
+        // Row 0 (start): 3 nodes
+        { types: ['Combat', 'Event', 'Combat'], data: [pickEnemy(0), undefined, pickEnemy(1)] },
+        // Row 1: 4 nodes
+        { types: ['Combat', 'Shop', 'Shop', 'Treasure'], data: [pickEnemy(0), undefined, undefined, undefined] },
+        // Row 2: 4 nodes
+        { types: ['Combat', 'Event', 'Combat', 'Combat'], data: [pickEnemy(1), undefined, pickEnemy(0), pickEnemy(1)] },
+        // Row 3: 3 nodes
+        { types: ['Combat', 'Event', 'Combat'], data: [pickEnemy(0), undefined, pickEnemy(1)] },
+        // Row 4 (boss): 1 node
+        { types: ['Boss'], data: [runData.boss] },
       ];
-      setNodes(generatedNodes);
+
+      const allNodes: MapNode[] = [];
+      const rowNodeIds: string[][] = [];
+
+      rowDefs.forEach((rowDef, rowIdx) => {
+        const ids: string[] = [];
+        rowDef.types.forEach((type, colIdx) => {
+          const id = rowIdx === rowDefs.length - 1 ? 'boss' : `r${rowIdx}c${colIdx}`;
+          ids.push(id);
+          allNodes.push({
+            id,
+            type,
+            x: 0,
+            y: 0,
+            row: rowIdx,
+            nextNodes: [], // filled below
+            completed: false,
+            data: rowDef.data?.[colIdx],
+          });
+        });
+        rowNodeIds.push(ids);
+      });
+
+      // Connect each node to 1-2 nodes in the next row
+      for (let r = 0; r < rowNodeIds.length - 1; r++) {
+        const current = rowNodeIds[r];
+        const next = rowNodeIds[r + 1];
+
+        if (next.length === 1) {
+          // All connect to boss
+          current.forEach(id => {
+            const node = allNodes.find(n => n.id === id)!;
+            node.nextNodes = [next[0]];
+          });
+        } else {
+          // Each node connects to closest 1-2 nodes in next row
+          current.forEach((id, ci) => {
+            const node = allNodes.find(n => n.id === id)!;
+            const ratio = current.length > 1 ? ci / (current.length - 1) : 0.5;
+            const targetIdx = Math.round(ratio * (next.length - 1));
+            const targets = new Set<string>();
+            targets.add(next[targetIdx]);
+            // Add one neighbor for variety
+            if (targetIdx > 0 && Math.random() > 0.4) targets.add(next[targetIdx - 1]);
+            if (targetIdx < next.length - 1 && Math.random() > 0.4) targets.add(next[targetIdx + 1]);
+            node.nextNodes = Array.from(targets);
+          });
+
+          // Ensure every next-row node is reachable
+          next.forEach(nextId => {
+            const isReachable = current.some(id => allNodes.find(n => n.id === id)!.nextNodes.includes(nextId));
+            if (!isReachable) {
+              // Connect from closest current node
+              const nextIdx = next.indexOf(nextId);
+              const ratio = next.length > 1 ? nextIdx / (next.length - 1) : 0.5;
+              const closestIdx = Math.round(ratio * (current.length - 1));
+              allNodes.find(n => n.id === current[closestIdx])!.nextNodes.push(nextId);
+            }
+          });
+        }
+      }
+
+      setNodes(allNodes);
     }
   }, [runData]);
 
@@ -91,7 +159,18 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   };
 
   if (view === 'map') {
-    return <NodeMap nodes={nodes} currentNodeId={currentNodeId} onNodeSelect={handleNodeSelect} />;
+    return (
+      <NodeMap
+        nodes={nodes}
+        currentNodeId={currentNodeId}
+        onNodeSelect={handleNodeSelect}
+        playerHp={playerHp}
+        playerMaxHp={playerMaxHp}
+        gold={gold}
+        bossName={runData.boss.name}
+        totalFloors={5}
+      />
+    );
   }
 
   if (view === 'combat' && currentEnemy) {

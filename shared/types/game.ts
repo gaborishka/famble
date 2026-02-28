@@ -33,6 +33,7 @@ export interface Enemy {
 export interface Boss extends Enemy {
   enrageThreshold: number;
   phase2Intents: Intent[];
+  narratorText?: string;
 }
 
 export interface Synergy {
@@ -65,6 +66,7 @@ export interface MapNode {
   type: 'Combat' | 'Event' | 'Shop' | 'Treasure' | 'Boss';
   x: number;
   y: number;
+  row?: number; // Row index for tree layout (0 = start, max = boss)
   nextNodes: string[];
   completed: boolean;
   data?: any; // e.g. Enemy ID
@@ -86,4 +88,6 @@ export interface RunData {
   boss: Boss;
   synergies: Synergy[];
   node_map?: MapNode[];
+  roomMusicPrompt?: string;
+  bossMusicPrompt?: string;
 }
