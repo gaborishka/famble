@@ -1,0 +1,97 @@
+{
+  "theme": "Kitchen Nightmares",
+  "cards": [
+    {
+      "id": "c1",
+      "name": "Chef's Knife",
+      "cost": 1,
+      "type": "Attack",
+      "description": "Deal 6 damage.",
+      "damage": 6,
+      "tags": ["Sharp"]
+    },
+    {
+      "id": "c2",
+      "name": "Pan Block",
+      "cost": 1,
+      "type": "Skill",
+      "description": "Gain 5 block.",
+      "block": 5,
+      "tags": ["Metal"]
+    },
+    {
+      "id": "c3",
+      "name": "Spicy Seasoning",
+      "cost": 0,
+      "type": "Skill",
+      "description": "Apply 2 Vulnerable. Exhaust.",
+      "magicNumber": 2,
+      "tags": ["Heat", "Seasoning"]
+    },
+    {
+      "id": "c4",
+      "name": "Flambé",
+      "cost": 2,
+      "type": "Attack",
+      "description": "Deal 14 damage. If you played a Heat card this turn, deal 20 instead.",
+      "damage": 14,
+      "tags": ["Heat"]
+    },
+    {
+      "id": "c5",
+      "name": "Gordon's Yell",
+      "cost": 1,
+      "type": "Attack",
+      "description": "Deal 8 damage. Draw 1 card.",
+      "damage": 8,
+      "tags": ["Loud"]
+    }
+  ],
+  "enemies": [
+    {
+      "id": "e1",
+      "name": "Raw Chicken",
+      "maxHp": 30,
+      "currentHp": 30,
+      "description": "It's RAW!",
+      "intents": [
+        { "type": "Attack", "value": 5, "description": "Salmonella Strike" },
+        { "type": "Defend", "value": 4, "description": "Slimy Coating" }
+      ]
+    },
+    {
+      "id": "e2",
+      "name": "Burnt Toast",
+      "maxHp": 25,
+      "currentHp": 25,
+      "description": "Scraped off the bottom.",
+      "intents": [
+        { "type": "Attack", "value": 8, "description": "Charcoal Crunch" }
+      ]
+    }
+  ],
+  "boss": {
+    "id": "b1",
+    "name": "The Head Chef",
+    "maxHp": 150,
+    "currentHp": 150,
+    "description": "He's looking for the lamb sauce.",
+    "enrageThreshold": 50,
+    "intents": [
+      { "type": "Attack", "value": 12, "description": "Cleaver Chop" },
+      { "type": "Buff", "value": 3, "description": "Taste Test (Strength)" }
+    ],
+    "phase2Intents": [
+      { "type": "Attack", "value": 20, "description": "WHERE IS THE LAMB SAUCE?!" }
+    ]
+  },
+  "synergies": [
+    {
+      "tag": "Heat",
+      "threshold": 2,
+      "effect": "Damage",
+      "value": 5,
+      "description": "Play 2 Heat cards to deal 5 damage to all enemies."
+    }
+  ]
+}

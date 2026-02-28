@@ -11,13 +11,13 @@ interface HandDisplayProps {
 
 export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCard }) => {
   return (
-    <div className="flex justify-center items-end h-72 relative w-full max-w-5xl mx-auto">
+    <div className="flex justify-center items-end h-72 relative w-full max-w-5xl mx-auto pointer-events-none">
       {hand.map((card, index) => {
         const total = hand.length;
         const middle = (total - 1) / 2;
         const offset = index - middle;
-        const rotation = offset * 4;
-        const yOffset = Math.abs(offset) * 15;
+        const rotation = offset * 6;
+        const yOffset = Math.abs(offset) * 10 + Math.pow(offset, 2) * 8; // deeper curve
 
         return (
           <motion.div
@@ -25,9 +25,9 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
             initial={{ y: 200, opacity: 0 }}
             animate={{ y: yOffset, opacity: 1, rotate: rotation }}
             transition={{ type: 'spring', stiffness: 260, damping: 20, delay: index * 0.1 }}
-            className="absolute origin-bottom"
+            className="absolute origin-bottom pointer-events-auto"
             style={{
-              left: `calc(50% + ${offset * 110}px - 96px)`,
+              left: `calc(50% + ${offset * 105}px - 96px)`, // tighter overlap
               zIndex: index,
             }}
           >
