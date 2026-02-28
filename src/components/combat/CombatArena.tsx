@@ -130,7 +130,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     return <div className="text-white">Loading combat...</div>;
   }
 
-  const handlePlayCard = (card: Card) => {
+  const handlePlayCard = (card: Card, index: number) => {
     if (card.cost > gameState.energy || isGameOver) return;
 
     if (card.audioPrompt) {
@@ -162,7 +162,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       newTexts.push({ id: Date.now() + 1, text: `+${card.block}`, type: 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
     }
 
-    let newState = resolveCard(card, gameState);
+    let newState = resolveCard(card, index, gameState);
 
     // Check synergies
     const triggered = checkSynergies(newState, runData.synergies);
@@ -366,7 +366,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       {/* Arena Center */}
       <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative z-10">
         {/* Player Sprite */}
-        <div className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
+        <div id="combat-player" className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
           {/* Ground Shadow */}
           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
@@ -397,7 +397,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         </div>
 
         {/* Enemy Sprite */}
-        <div className="flex flex-col items-center justify-end h-[32rem] z-10 w-64 relative">
+        <div id="combat-enemy" className="flex flex-col items-center justify-end h-[32rem] z-10 w-64 relative">
           <div className="mb-4 flex flex-col items-center z-20 w-80 relative">
             {/* Intent floating near boss's weapon */}
             <div className="absolute top-8 -left-12 bg-transparent text-white drop-shadow-md flex items-center gap-1 z-30">

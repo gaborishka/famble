@@ -1,30 +1,30 @@
 import { Card, GameState, Enemy, Boss } from '../../shared/types/game';
 import { drawCards } from './deckManager';
 
-export function resolveCard(card: Card, state: GameState): GameState {
+export function resolveCard(card: Card, index: number, state: GameState): GameState {
   const newState = { ...state };
-  
+
   if (card.cost > newState.energy) {
     return state; // Cannot play
   }
-  
+
   newState.energy -= card.cost;
-  
+
   // Track tags
   for (const tag of card.tags) {
     newState.tagsPlayedThisTurn[tag] = (newState.tagsPlayedThisTurn[tag] || 0) + 1;
   }
-  
+
   if (card.block) {
     newState.statusEffects['Block'] = (newState.statusEffects['Block'] || 0) + card.block;
   }
-  
+
   if (card.damage && newState.currentEnemy) {
     let dmg = card.damage;
     if (newState.currentEnemy.statusEffects && newState.currentEnemy.statusEffects['Vulnerable']) {
       dmg = Math.floor(dmg * 1.5);
     }
-    
+
     // Simple damage to enemy
     let enemyBlock = newState.currentEnemy.statusEffects?.['Block'] || 0;
     if (enemyBlock >= dmg) {
@@ -34,7 +34,7 @@ export function resolveCard(card: Card, state: GameState): GameState {
       dmg -= enemyBlock;
       enemyBlock = 0;
     }
-    
+
     newState.currentEnemy = {
       ...newState.currentEnemy,
       currentHp: Math.max(0, newState.currentEnemy.currentHp - dmg),
@@ -44,7 +44,7 @@ export function resolveCard(card: Card, state: GameState): GameState {
       }
     };
   }
-  
+
   if (card.magicNumber && card.description.includes('Vulnerable')) {
     if (newState.currentEnemy) {
       newState.currentEnemy = {
@@ -68,7 +68,11 @@ export function resolveCard(card: Card, state: GameState): GameState {
   }
 
   // Move card from hand to discard pile (or exhaust)
-  newState.hand = newState.hand.filter(c => c.id !== card.id);
+  const playedCard = newState.hand[index];
+  newState.hand = [
+    ...newState.hand.slice(0, index),
+    ...newState.hand.slice(index + 1)
+  ];
   if (card.description.includes('Exhaust')) {
     newState.exhaustPile = [...newState.exhaustPile, card];
   } else {
