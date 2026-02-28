@@ -11,9 +11,45 @@ import { motion, AnimatePresence } from 'motion/react';
 import { GameImage } from '../GameImage';
 
 const ATTACK_INTENT_TYPES = new Set(['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff']);
-type EnemyAnimState = 'idle' | 'attack' | 'hit' | 'buff' | 'defend' | 'debuff' | 'unknown';
+type EnemyAnimState = 'idle' | 'attack' | 'hit' | 'buff' | 'defend' | 'debuff' | 'unknown' | 'death';
 const PRIMARY_ENEMY_ANIM_MS = 320;
 const SECONDARY_ENEMY_ANIM_MS = 260;
+const HEAVY_HIT_THRESHOLD = 15;
+
+interface Particle {
+  id: number;
+  x: number;
+  y: number;
+  type: 'hit' | 'block';
+  target: 'player' | 'enemy';
+}
+
+// Particle burst component for hit sparks and block shields
+const ParticleBurst: React.FC<{ particles: Particle[] }> = ({ particles }) => (
+  <AnimatePresence>
+    {particles.map(p => (
+      <motion.div
+        key={p.id}
+        initial={{ opacity: 1, scale: 0.3, x: p.x, y: p.y }}
+        animate={{
+          opacity: 0,
+          scale: p.type === 'hit' ? 1.5 : 1.2,
+          x: p.x + (Math.random() - 0.5) * 120,
+          y: p.y + (Math.random() - 0.5) * 120,
+        }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.6, ease: 'easeOut' }}
+        className="absolute pointer-events-none z-50"
+      >
+        {p.type === 'hit' ? (
+          <div className="w-3 h-3 bg-orange-400 rounded-full shadow-[0_0_8px_rgba(251,146,60,0.8)]" />
+        ) : (
+          <div className="w-4 h-4 bg-blue-400/80 rounded-sm rotate-45 shadow-[0_0_8px_rgba(96,165,250,0.8)]" />
+        )}
+      </motion.div>
+    ))}
+  </AnimatePresence>
+);
 
 const breathingTransition = {
   y: { duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
@@ -47,15 +83,20 @@ const enemyVariants = {
     y: [0, -5],
     scaleY: [1, 1.015],
     scaleX: [1, 0.992],
+    rotate: [0, -0.5, 0, 0.5, 0],
     filter: 'brightness(1)',
-    transition: enemyBreathingTransition,
+    transition: {
+      ...enemyBreathingTransition,
+      rotate: { duration: 4, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' as const },
+    },
   },
   attack: { x: [0, -60, 10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
   hit: { x: [0, 15, -15, 15, -15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
   buff: { filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'], scale: [1, 1.06, 1], transition: { duration: 0.45 } },
   defend: { y: [0, -12, 0], scale: [1, 1.08, 1], filter: ['brightness(1)', 'brightness(1.3) drop-shadow(0 0 14px #60a5fa)', 'brightness(1)'], transition: { duration: 0.45 } },
   debuff: { x: [0, -10, 10, -6, 6, 0], rotate: [0, -2, 2, -1, 1, 0], filter: ['brightness(1)', 'brightness(1.25) drop-shadow(0 0 14px #a855f7)', 'brightness(1)'], transition: { duration: 0.5 } },
-  unknown: { x: [0, -8, 8, -4, 4, 0], y: [0, -5, 0, -3, 0], rotate: [0, 3, -3, 2, -2, 0], filter: ['brightness(1)', 'brightness(1.2)', 'brightness(1)'], transition: { duration: 0.55 } }
+  unknown: { x: [0, -8, 8, -4, 4, 0], y: [0, -5, 0, -3, 0], rotate: [0, 3, -3, 2, -2, 0], filter: ['brightness(1)', 'brightness(1.2)', 'brightness(1)'], transition: { duration: 0.55 } },
+  death: { y: [0, -20, 40], scale: [1, 1.1, 0], opacity: [1, 1, 0], rotate: [0, -5, 15], filter: ['brightness(1)', 'brightness(2)', 'brightness(0.3)'], transition: { duration: 0.8, ease: 'easeIn' } },
 };
 
 interface FloatingText {
@@ -67,13 +108,20 @@ interface FloatingText {
   yOffset: number;
 }
 
+export interface CombatVictorySummary {
+  hp: number;
+  maxHp: number;
+  turns: number;
+  damageDealt: number;
+}
+
 interface CombatArenaProps {
   runData: RunData;
   deck: Card[];
   enemy: Enemy | Boss;
   playerHp: number;
   playerMaxHp: number;
-  onVictory: (hp: number) => void;
+  onVictory: (summary: CombatVictorySummary) => void;
   onDefeat: () => void;
 }
 
@@ -85,6 +133,16 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   const [playerAnim, setPlayerAnim] = useState<string>('idle');
   const [enemyAnim, setEnemyAnim] = useState<EnemyAnimState>('idle');
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
+  const [screenShake, setScreenShake] = useState(false);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [impactFlash, setImpactFlash] = useState<'player' | 'enemy' | null>(null);
+  const [enemyHpShake, setEnemyHpShake] = useState(false);
+  const [playerHpShake, setPlayerHpShake] = useState(false);
+  const [isEnraged, setIsEnraged] = useState(false);
+  const [enrageFlash, setEnrageFlash] = useState(false);
+  const [totalDamageDealt, setTotalDamageDealt] = useState(0);
+  const prevEnemyHpRef = useRef<number | null>(null);
+  const prevPlayerHpRef = useRef<number | null>(null);
   const [isMusicPlaying, setIsMusicPlaying] = useState(() => {
     const saved = localStorage.getItem('famble_music_playing');
     return saved !== null ? JSON.parse(saved) : true;
@@ -109,6 +167,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     state.playerHp = playerHp;
     state.playerMaxHp = playerMaxHp;
     setGameState(state);
+    setTotalDamageDealt(0);
   }, [deck, enemy, playerHp, playerMaxHp]);
 
   useEffect(() => {
@@ -122,9 +181,10 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     }
 
     // Start background music
-    const prmpt = (enemy as Boss).enrageThreshold ? runData.bossMusicPrompt : runData.roomMusicPrompt;
+    const isBossEncounter = Boolean((enemy as Boss).enrageThreshold);
+    const prmpt = isBossEncounter ? runData.bossMusicPrompt : runData.roomMusicPrompt;
     if (prmpt) {
-      generateMusic(prmpt).then(url => {
+      generateMusic(prmpt, { theme: runData.theme, mode: isBossEncounter ? 'boss' : 'room' }).then(url => {
         if (isCancelled || !url) return;
         const audio = new Audio(url);
         audio.loop = true;
@@ -149,7 +209,12 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   useEffect(() => {
     const boss = enemy as Boss;
     if (boss.enrageThreshold && boss.narratorText) {
-      generateBossTTS(boss.narratorText, runData.theme).then(url => {
+      generateBossTTS(boss.narratorText, {
+        theme: runData.theme,
+        voiceStyle: boss.narratorVoiceStyle,
+        voiceGender: boss.narratorVoiceGender,
+        voiceAccent: boss.narratorVoiceAccent,
+      }).then(url => {
         if (!url) return;
         const audio = new Audio(url);
         audio.volume = 0.8;
@@ -160,9 +225,72 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     }
   }, [enemy, runData.theme]);
 
+  // Trigger screen shake for heavy hits
+  const triggerScreenShake = () => {
+    setScreenShake(true);
+    setTimeout(() => setScreenShake(false), 400);
+  };
+
+  // HP bar shake
+  const triggerHpShake = (target: 'player' | 'enemy') => {
+    if (target === 'enemy') {
+      setEnemyHpShake(true);
+      setTimeout(() => setEnemyHpShake(false), 400);
+    } else {
+      setPlayerHpShake(true);
+      setTimeout(() => setPlayerHpShake(false), 400);
+    }
+  };
+
+  // Enrage detection
+  useEffect(() => {
+    if (!gameState?.currentEnemy) return;
+    const boss = enemy as Boss;
+    if (!boss.enrageThreshold) return;
+    const hpPercent = (gameState.currentEnemy.currentHp / gameState.currentEnemy.maxHp) * 100;
+    if (hpPercent <= boss.enrageThreshold && !isEnraged) {
+      setIsEnraged(true);
+      setEnrageFlash(true);
+      triggerScreenShake();
+      setTimeout(() => setEnrageFlash(false), 800);
+    }
+  }, [gameState?.currentEnemy?.currentHp]);
+
+  // Track HP changes for HP bar shake
+  useEffect(() => {
+    if (!gameState) return;
+    if (prevEnemyHpRef.current !== null && gameState.currentEnemy && gameState.currentEnemy.currentHp < prevEnemyHpRef.current) {
+      triggerHpShake('enemy');
+    }
+    if (prevPlayerHpRef.current !== null && gameState.playerHp < prevPlayerHpRef.current) {
+      triggerHpShake('player');
+    }
+    prevEnemyHpRef.current = gameState.currentEnemy?.currentHp ?? null;
+    prevPlayerHpRef.current = gameState.playerHp;
+  }, [gameState?.currentEnemy?.currentHp, gameState?.playerHp]);
+
   if (!gameState || !gameState.currentEnemy) {
     return <div className="text-white">Loading combat...</div>;
   }
+
+  // Spawn particles at a target
+  const spawnParticles = (target: 'player' | 'enemy', type: 'hit' | 'block', count = 6) => {
+    const newParticles: Particle[] = Array.from({ length: count }, (_, i) => ({
+      id: Date.now() + i + Math.random() * 1000,
+      x: (Math.random() - 0.5) * 60,
+      y: (Math.random() - 0.5) * 60 - 40,
+      type,
+      target,
+    }));
+    setParticles(prev => [...prev, ...newParticles]);
+    setTimeout(() => setParticles(prev => prev.filter(p => !newParticles.find(n => n.id === p.id))), 700);
+  };
+
+  // Flash overlay on hit
+  const triggerImpactFlash = (target: 'player' | 'enemy') => {
+    setImpactFlash(target);
+    setTimeout(() => setImpactFlash(null), 150);
+  };
 
   const createFloatingText = (text: string, type: FloatingText['type'], target: FloatingText['target']) => {
     const id = Date.now() + Math.floor(Math.random() * 1000);
@@ -234,7 +362,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
     if (card.cost > gameState.energy || isGameOver) return;
 
     if (card.audioPrompt) {
-      generateSoundEffect(card.audioPrompt).then(url => {
+      generateSoundEffect(card.audioPrompt, { theme: runData.theme, source: 'card' }).then(url => {
         if (url) new Audio(url).play().catch(e => console.log('Audio autoplay prevented', e));
       });
     }
@@ -246,11 +374,15 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
       setTimeout(() => {
         setEnemyAnim('hit');
+        triggerImpactFlash('enemy');
+        spawnParticles('enemy', 'hit');
+        if ((card.damage || 0) >= HEAVY_HIT_THRESHOLD) triggerScreenShake();
         setTimeout(() => setEnemyAnim('idle'), 400);
       }, 200);
     } else {
       setPlayerAnim('buff');
       setTimeout(() => setPlayerAnim('idle'), 500);
+      if (card.block) spawnParticles('player', 'block', 4);
     }
 
     // Floating text
@@ -262,6 +394,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       newTexts.push({ id: Date.now() + 1, text: `+${card.block}`, type: 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
     }
 
+    const enemyHpBefore = gameState.currentEnemy.currentHp;
     let newState = resolveCard(card, index, gameState);
 
     // Check synergies
@@ -300,9 +433,27 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       }, 1500);
     }
 
+    const enemyHpAfter = newState.currentEnemy?.currentHp ?? 0;
+    const damageDealtThisCard = Math.max(0, enemyHpBefore - enemyHpAfter);
+    const nextTotalDamageDealt = totalDamageDealt + damageDealtThisCard;
+    if (damageDealtThisCard > 0) {
+      setTotalDamageDealt(nextTotalDamageDealt);
+    }
+
     // Check enemy death
     if (newState.currentEnemy && newState.currentEnemy.currentHp <= 0) {
-      setTimeout(() => onVictory(newState.playerHp), 1500);
+      setEnemyAnim('death');
+      triggerScreenShake();
+      setTimeout(
+        () =>
+          onVictory({
+            hp: newState.playerHp,
+            maxHp: newState.playerMaxHp,
+            turns: Math.max(1, gameState.turn),
+            damageDealt: nextTotalDamageDealt,
+          }),
+        1500
+      );
       setGameState(newState);
     } else {
       setGameState(newState);
@@ -319,7 +470,10 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
     if (intent && isAttackIntent) {
       if (gameState.currentEnemy!.audioPrompt) {
-        generateSoundEffect(gameState.currentEnemy!.audioPrompt).then(url => {
+        generateSoundEffect(gameState.currentEnemy!.audioPrompt, {
+          theme: runData.theme,
+          source: (gameState.currentEnemy as Boss).enrageThreshold ? 'boss' : 'enemy',
+        }).then(url => {
           if (url) new Audio(url).play().catch(e => console.log('Audio autoplay prevented', e));
         });
       }
@@ -328,6 +482,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
       setTimeout(() => {
         setPlayerAnim('hit');
+        triggerImpactFlash('player');
         setTimeout(() => setPlayerAnim('idle'), 400);
 
         // Show floating text
@@ -346,6 +501,12 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         }
 
         if (dmg > 0) {
+          if (actualDmg > 0) {
+            spawnParticles('player', 'hit');
+            if (actualDmg >= HEAVY_HIT_THRESHOLD) triggerScreenShake();
+          } else {
+            spawnParticles('player', 'block', 4);
+          }
           createFloatingText(actualDmg > 0 ? `-${actualDmg}` : 'Blocked!', actualDmg > 0 ? 'damage' : 'block', 'player');
         }
       }, 200);
@@ -397,7 +558,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#0a0f1c] text-white overflow-hidden p-8 relative font-sans z-0">
+    <div className={`flex flex-col h-screen bg-[#0a0f1c] text-white overflow-hidden p-8 relative font-sans z-0 ${screenShake ? 'animate-screen-shake' : ''}`}>
       {/* Dynamic Background */}
       <div className="absolute inset-0 z-[-1]">
         <GameImage
@@ -437,9 +598,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
         </div>
 
         {/* HP Bar */}
-        <div className="w-56 h-7 bg-[#1a2035] rounded-r-md border-y border-r border-[#334155] overflow-hidden relative flex items-center shadow-lg -ml-4 pl-6">
+        <div className={`w-56 h-7 bg-[#1a2035] rounded-r-md border-y border-r border-[#334155] overflow-hidden relative flex items-center shadow-lg -ml-4 pl-6 ${playerHpShake ? 'animate-hp-shake' : ''}`}>
           <div
-            className="h-full bg-[#4ade80] transition-all duration-300 absolute left-0 top-0 shadow-[inset_0_-3px_5px_rgba(0,0,0,0.3)]"
+            className={`h-full transition-all duration-300 absolute left-0 top-0 shadow-[inset_0_-3px_5px_rgba(0,0,0,0.3)] ${gameState.playerHp / gameState.playerMaxHp < 0.25 ? 'bg-[#ef4444]' : 'bg-[#4ade80]'}`}
             style={{ width: `${(gameState.playerHp / gameState.playerMaxHp) * 100}%` }}
           />
           <div className="relative w-full flex justify-between px-2 text-white font-bold text-sm z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
@@ -500,12 +661,18 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative z-10">
         {/* Player Sprite */}
         <div id="combat-player" className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
+          {/* Low HP Pulsation */}
+          {gameState.playerHp / gameState.playerMaxHp < 0.25 && (
+            <div className="absolute inset-0 rounded-full bg-red-600 blur-[40px] pointer-events-none z-0 animate-low-hp-pulse" />
+          )}
+
+          {/* Synergy Aura - glows when any synergy is active */}
+          {activeSynergies.length > 0 && (
+            <div className="absolute inset-0 rounded-full bg-yellow-400 blur-[50px] pointer-events-none z-0 animate-synergy-aura" />
+          )}
+
           {/* Ground Shadow */}
-          <motion.div
-            animate={{ scaleX: [1, 0.92, 1], opacity: [0.6, 0.5, 0.6] }}
-            transition={{ duration: 2.5, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' }}
-            className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0"
-          />
+          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${playerAnim === 'attack' ? 'animate-shadow-attack-player' : 'animate-shadow-breathe-player'}`} />
           <motion.div
             variants={playerVariants}
             initial="idle"
@@ -513,6 +680,22 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             className="w-full h-80 flex items-center justify-center relative z-10"
           >
             <GameImage prompt={`A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-full h-full object-contain scale-[1.35] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none" alt="Player" type="character" />
+
+            {/* Impact Flash */}
+            <AnimatePresence>
+              {impactFlash === 'player' && (
+                <motion.div
+                  initial={{ opacity: 0.8 }}
+                  animate={{ opacity: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute inset-0 bg-white/60 rounded-lg pointer-events-none z-40"
+                />
+              )}
+            </AnimatePresence>
+
+            {/* Particles */}
+            <ParticleBurst particles={particles.filter(p => p.target === 'player')} />
 
             {/* Player Floating Texts */}
             <AnimatePresence>
@@ -535,6 +718,11 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
         {/* Enemy Sprite */}
         <div id="combat-enemy" className={`flex flex-col items-center justify-end z-10 relative ${(enemy as Boss).enrageThreshold ? 'h-[52rem] w-[28rem]' : 'h-[32rem] w-64'}`}>
+          {/* Enrage Aura */}
+          {isEnraged && (
+            <div className="absolute inset-0 rounded-full bg-orange-600 blur-[60px] pointer-events-none z-0 animate-enrage-aura" />
+          )}
+
           <div className={`flex flex-col items-center z-50 relative ${(enemy as Boss).enrageThreshold ? 'w-96 mb-[14rem]' : 'w-80 mb-4'}`}>
             {/* Intent floating near boss's weapon */}
             <div className="absolute top-8 left-0 bg-slate-800/90 text-white drop-shadow-md flex items-center gap-2 z-30 px-3 py-1.5 rounded-xl border border-slate-600 shadow-lg">
@@ -549,9 +737,10 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
               {gameState.currentEnemy.name}
             </div>
 
-            <div className="w-full h-5 bg-[#1a2035] rounded-sm border-2 border-[#334155] mx-auto overflow-hidden relative shadow-lg">
+            {/* Enemy HP Bar with shake */}
+            <div className={`w-full h-5 bg-[#1a2035] rounded-sm border-2 border-[#334155] mx-auto overflow-hidden relative shadow-lg ${enemyHpShake ? 'animate-hp-shake' : ''}`}>
               <div
-                className="h-full bg-[#ef4444] transition-all duration-300 absolute left-0 top-0 shadow-[inset_0_-4px_6px_rgba(0,0,0,0.3)]"
+                className={`h-full transition-all duration-300 absolute left-0 top-0 shadow-[inset_0_-4px_6px_rgba(0,0,0,0.3)] ${isEnraged ? 'bg-[#f97316]' : 'bg-[#ef4444]'}`}
                 style={{ width: `${(gameState.currentEnemy.currentHp / gameState.currentEnemy.maxHp) * 100}%` }}
               />
               <div className="relative w-full text-center text-white font-bold text-xs z-10 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] leading-5">
@@ -560,8 +749,8 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             </div>
 
             {(enemy as Boss).enrageThreshold && (
-              <div className="mt-2 flex items-center gap-1 text-sm text-[#f97316] drop-shadow-md font-semibold font-serif">
-                <span>🔥</span> Enrage at {(enemy as Boss).enrageThreshold}% HP
+              <div className={`mt-2 flex items-center gap-1 text-sm drop-shadow-md font-semibold font-serif ${isEnraged ? 'text-red-500' : 'text-[#f97316]'}`}>
+                <span>🔥</span> {isEnraged ? 'ENRAGED!' : `Enrage at ${(enemy as Boss).enrageThreshold}% HP`}
               </div>
             )}
 
@@ -578,12 +767,8 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             </div>
           </div>
 
-          {/* Ground Shadow */}
-          <motion.div
-            animate={{ scaleX: [1, 0.9, 1], opacity: [0.6, 0.48, 0.6] }}
-            transition={{ duration: 3, ease: 'easeInOut', repeat: Infinity, repeatType: 'reverse' }}
-            className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${(enemy as Boss).enrageThreshold ? 'w-64 h-12' : 'w-40 h-8'}`}
-          />
+          {/* Ground Shadow with attack pulse */}
+          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${(enemy as Boss).enrageThreshold ? 'w-64 h-12' : 'w-40 h-8'} ${enemyAnim === 'attack' ? 'animate-shadow-attack-enemy' : 'animate-shadow-breathe-enemy'}`} />
           <motion.div
             variants={enemyVariants}
             initial="idle"
@@ -595,6 +780,22 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             ) : (
               <span className="text-8xl z-10 drop-shadow-lg">{(enemy as Boss).enrageThreshold ? '👑' : '👹'}</span>
             )}
+
+            {/* Impact Flash */}
+            <AnimatePresence>
+              {impactFlash === 'enemy' && (
+                <motion.div
+                  initial={{ opacity: 0.8 }}
+                  animate={{ opacity: 0 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute inset-0 bg-white/60 rounded-lg pointer-events-none z-40"
+                />
+              )}
+            </AnimatePresence>
+
+            {/* Particles */}
+            <ParticleBurst particles={particles.filter(p => p.target === 'enemy')} />
 
             {/* Enemy Floating Texts */}
             <AnimatePresence>
@@ -684,6 +885,19 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           onPlayCard={handlePlayCard}
         />
       </div>
+
+      {/* Enrage Flash Overlay */}
+      <AnimatePresence>
+        {enrageFlash && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 0.6, 0] }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.8 }}
+            className="absolute inset-0 bg-orange-500/30 z-[90] pointer-events-none"
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };

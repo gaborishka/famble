@@ -44,6 +44,9 @@ export interface Boss extends Enemy {
   enrageThreshold: number;
   phase2Intents: Intent[];
   narratorText?: string;
+  narratorVoiceStyle?: string;
+  narratorVoiceGender?: 'male' | 'female' | 'neutral';
+  narratorVoiceAccent?: string;
 }
 
 export interface Synergy {

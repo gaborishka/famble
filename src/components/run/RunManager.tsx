@@ -1,13 +1,39 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { RunData, MapNode, Card, Enemy, Boss } from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
-import { CombatArena } from '../combat/CombatArena';
+import { CombatArena, CombatVictorySummary } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
 import { generateFallbackNodeMap } from '../../engine/mapGenerator';
 
 interface RunManagerProps {
   runData: RunData;
   onReset: () => void;
+}
+
+const getNodeRow = (node: MapNode): number => node.row ?? Math.round(node.y / 20);
+
+const calculateCurrentFloor = (nodeList: MapNode[], floorCount: number): number => {
+  let maxCompletedRow = -1;
+  nodeList.forEach(node => {
+    if (node.completed) {
+      const row = getNodeRow(node);
+      if (row > maxCompletedRow) {
+        maxCompletedRow = row;
+      }
+    }
+  });
+  return Math.min(maxCompletedRow + 2, Math.max(1, floorCount));
+};
+
+interface RewardStats {
+  damageDealt: number;
+  turns: number;
+  hpRemaining: number;
+  hpMax: number;
+  deckCount: number;
+  floor: number;
+  totalFloors: number;
+  gold: number;
 }
 
 export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
@@ -37,6 +63,8 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [gold, setGold] = useState(100);
   const [currentEnemy, setCurrentEnemy] = useState<Enemy | Boss | null>(null);
   const [campfireAction, setCampfireAction] = useState<'choosing' | 'smithing'>('choosing');
+  const [rewardCards, setRewardCards] = useState<Card[]>([]);
+  const [rewardStats, setRewardStats] = useState<RewardStats | null>(null);
 
   useEffect(() => {
     if (runData.node_map) {
@@ -48,16 +76,37 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     } else {
       setNodes(generateFallbackNodeMap(runData));
     }
+    setRewardCards([]);
+    setRewardStats(null);
   }, [runData]);
 
   const totalFloors = useMemo(() => {
     if (nodes.length === 0) return 1;
     const highestRow = nodes.reduce((maxRow, node) => {
-      const row = node.row ?? Math.round(node.y / 20);
+      const row = getNodeRow(node);
       return Math.max(maxRow, row);
     }, 0);
     return highestRow + 1;
   }, [nodes]);
+
+  const currentFloor = useMemo(() => calculateCurrentFloor(nodes, totalFloors), [nodes, totalFloors]);
+
+  const getRewardSource = (): Card[] => {
+    const rewardPool = runData.cards.filter(card => !isBasicStarterCard(card));
+    return rewardPool.length > 0 ? rewardPool : runData.cards;
+  };
+
+  const getRandomRewardCards = (): Card[] => {
+    const source = getRewardSource();
+    return [...source]
+      .sort(() => Math.random() - 0.5)
+      .slice(0, Math.min(3, source.length));
+  };
+
+  const clearRewardState = () => {
+    setRewardCards([]);
+    setRewardStats(null);
+  };
 
   const handleNodeSelect = (node: MapNode) => {
     setCurrentNodeId(node.id);
@@ -96,16 +145,36 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     }
   };
 
-  const handleCombatVictory = (hp: number) => {
-    setPlayerHp(hp);
-    setNodes(prev => prev.map(n => n.id === currentNodeId ? { ...n, completed: true } : n));
+  const handleCombatVictory = (summary: CombatVictorySummary) => {
+    const updatedNodes = nodes.map(node => (
+      node.id === currentNodeId ? { ...node, completed: true } : node
+    ));
 
-    if (currentEnemy === runData.boss) {
+    setPlayerHp(summary.hp);
+    setPlayerMaxHp(summary.maxHp);
+    setNodes(updatedNodes);
+
+    if (currentEnemy?.id === runData.boss.id) {
       // Victory!
       alert('Victory!');
       onReset();
     } else {
-      setGold(g => g + 25);
+      const nextGold = gold + 25;
+      const nextRewardCards = getRandomRewardCards();
+      const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
+
+      setGold(nextGold);
+      setRewardCards(nextRewardCards);
+      setRewardStats({
+        damageDealt: summary.damageDealt,
+        turns: summary.turns,
+        hpRemaining: summary.hp,
+        hpMax: summary.maxHp,
+        deckCount: deck.length,
+        floor: nextFloor,
+        totalFloors,
+        gold: nextGold,
+      });
       setView('reward');
     }
   };
@@ -116,11 +185,17 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   };
 
   const handleCardSelect = (card: Card) => {
-    setDeck(prev => [...prev, card]);
+    const rewardCard = {
+      ...card,
+      id: `${card.id}-reward-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    };
+    setDeck(prev => [...prev, rewardCard]);
+    clearRewardState();
     setView('map');
   };
 
   const handleSkipReward = () => {
+    clearRewardState();
     setView('map');
   };
 
@@ -173,11 +248,26 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    // Generate 3 random cards from runData.cards, excluding basic Strike/Defend
-    const rewardPool = runData.cards.filter(c => !isBasicStarterCard(c));
-    const rewardSource = rewardPool.length > 0 ? rewardPool : runData.cards;
-    const rewardCards = [...rewardSource].sort(() => Math.random() - 0.5).slice(0, 3);
-    return <CardReward cards={rewardCards} onSelect={handleCardSelect} onSkip={handleSkipReward} />;
+    const cardsToShow = rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3);
+    const statsToShow: RewardStats = rewardStats ?? {
+      damageDealt: 0,
+      turns: 1,
+      hpRemaining: playerHp,
+      hpMax: playerMaxHp,
+      deckCount: deck.length,
+      floor: currentFloor,
+      totalFloors,
+      gold,
+    };
+
+    return (
+      <CardReward
+        cards={cardsToShow}
+        onSelect={handleCardSelect}
+        onSkip={handleSkipReward}
+        stats={statsToShow}
+      />
+    );
   }
 
   if (view === 'event') {

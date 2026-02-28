@@ -3,6 +3,8 @@ import { RunData } from '../../shared/types/game';
 import { removeBackground } from '@imgly/background-removal';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const RUN_DATA_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash'] as const;
+const RUN_DATA_MAX_ATTEMPTS = 3;
 
 let currentRunId = '';
 
@@ -12,6 +14,33 @@ export function getCurrentRunId(): string {
 
 export function setCurrentRunId(id: string) {
   currentRunId = id;
+}
+
+function collectJsonCandidates(rawText: string): string[] {
+  const candidates: string[] = [];
+  const trimmed = rawText.trim();
+
+  if (trimmed) {
+    candidates.push(trimmed);
+  }
+
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fencedMatch?.[1]) {
+    candidates.push(fencedMatch[1].trim());
+  }
+
+  const firstBrace = trimmed.indexOf('{');
+  const lastBrace = trimmed.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function errorToMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 
 export async function generateRunData(prompt: string, fileData?: { mimeType: string; data: string }): Promise<RunData> {
@@ -27,11 +56,8 @@ export async function generateRunData(prompt: string, fileData?: { mimeType: str
     });
   }
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3-flash-preview',
-    contents: { parts },
-    config: {
-      systemInstruction: `You are an expert game designer for a Slay the Spire-style roguelike deckbuilder.
+  const runDataConfig = {
+    systemInstruction: `You are an expert game designer for a Slay the Spire-style roguelike deckbuilder.
 Based on the user's input (theme, text, or image), generate a complete set of game data.
 The game should be balanced, thematic, and fun.
 Create exactly 7 cards in total. The first card MUST be named 'Strike' (type Attack, 1 cost, 6 damage, no special effects). The second card MUST be named 'Defend' (type Skill, 1 cost, 5 block, no special effects). The remaining 5 cards should be unique special cards (mix of Attack, Skill, Power).
@@ -39,13 +65,23 @@ Also create exactly 4 unique normal enemies (ranging from simple to elite diffic
 Enemies do not use a deck of cards. Instead, their actions are dictated by a fixed sequence of 'intents' that loops. Simple enemies should have a sequence of 2-3 intents, medium 3-4, elite 3-5, and the boss 4-7 intents.
 Intents can be simple (Attack, Defend, Buff, Debuff, Unknown) or combined (AttackDefend, AttackDebuff, AttackBuff). Use 'value' for the primary amount (e.g. damage), and 'secondaryValue' for the secondary effect (e.g. block amount or debuff stacks).
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
-For audio, follow the thematic instructions provided by the user (or extrapolate based on Cooking, Legal, Science themes).
-Boss must include a 'narratorText' which is a dramatic opening line the boss will say when encountered.
+For audio fields, output ONLY the unique semantic fragment, not full production instructions.
+Audio fragment rules:
+- Keep fragments concrete and cinematic (specific source/action/material/emotion), avoid generic words like "epic sound effect".
+- Avoid technical directives like "loop", "high quality", "SFX", "music track", "audio", "stereo", "mix".
+- For card/enemy/boss audioPrompt: 4-14 words, one event-focused phrase.
+- For roomMusicPrompt/bossMusicPrompt: 6-18 words, describing motif/instrumentation/mood only.
+- Do not include spoken dialogue inside non-TTS prompts.
+Boss must include a 'narratorText' opening line (6-20 words), plus narrator voice hints:
+- narratorVoiceStyle: 2-8 words (example: "cold judicial authority")
+- narratorVoiceGender: one of male/female/neutral
+- narratorVoiceAccent: short accent hint if useful
+All returned string values must avoid raw double quote characters. Use apostrophes instead.
 Return the data strictly matching the provided JSON schema.`,
-      responseMimeType: 'application/json',
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
+    responseMimeType: 'application/json',
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
           theme: { type: Type.STRING, description: 'The overall theme of the run' },
           cards: {
             type: Type.ARRAY,
@@ -64,7 +100,7 @@ Return the data strictly matching the provided JSON schema.`,
                 magicNumber: { type: Type.INTEGER },
                 tags: { type: Type.ARRAY, items: { type: Type.STRING } },
                 imagePrompt: { type: Type.STRING, description: 'A visual description of the card for image generation' },
-                audioPrompt: { type: Type.STRING, description: 'A description for elevenlabs sound effect generation (e.g. "Sword clash", "Magic spell")' }
+                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for card SFX only. Example: "tempered steel slash through wet parchment". Do not include technical audio instructions.' }
               },
               required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt']
             }
@@ -82,7 +118,7 @@ Return the data strictly matching the provided JSON schema.`,
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
                 imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
-                audioPrompt: { type: Type.STRING, description: 'A description for elevenlabs sound effect of the enemy attacking' },
+                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for enemy attack SFX only. Example: "rusted halberd whoosh with chain rattle". Do not include technical audio instructions.' },
                 intents: {
                   type: Type.ARRAY,
                   items: {
@@ -109,8 +145,11 @@ Return the data strictly matching the provided JSON schema.`,
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
               imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
-              audioPrompt: { type: Type.STRING, description: 'A description for a boss attacking sound effect' },
-              narratorText: { type: Type.STRING, description: 'A dramatic opening dialogue line for the boss via text-to-speech module' },
+              audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Do not include technical audio instructions.' },
+              narratorText: { type: Type.STRING, description: 'A dramatic boss opening dialogue line for TTS, 6-20 words.' },
+              narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority".' },
+              narratorVoiceGender: { type: Type.STRING, description: 'Preferred narrator gender hint: male, female, or neutral.' },
+              narratorVoiceAccent: { type: Type.STRING, description: 'Optional accent hint for narrator voice selection.' },
               enrageThreshold: { type: Type.INTEGER, description: 'Percentage HP (0-100) when phase 2 starts' },
               intents: {
                 type: Type.ARRAY,
@@ -158,20 +197,57 @@ Return the data strictly matching the provided JSON schema.`,
               required: ['name', 'tag', 'threshold', 'effect', 'value', 'description']
             }
           },
-          roomMusicPrompt: { type: Type.STRING, description: 'Brief description for the normal combat background music' },
-          bossMusicPrompt: { type: Type.STRING, description: 'Brief description for the boss combat background music' }
+          roomMusicPrompt: { type: Type.STRING, description: 'Unique semantic fragment for room combat music motif. Example: "nervous pizzicato strings over dusty percussion".' },
+          bossMusicPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss music motif. Example: "massive choir swells over threatening taiko pulse".' }
         },
-        required: ['theme', 'cards', 'enemies', 'boss', 'synergies', 'roomMusicPrompt', 'bossMusicPrompt']
+      required: ['theme', 'cards', 'enemies', 'boss', 'synergies', 'roomMusicPrompt', 'bossMusicPrompt']
+    }
+  };
+
+  let runData: RunData | null = null;
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < RUN_DATA_MAX_ATTEMPTS; attempt++) {
+    const model = RUN_DATA_MODELS[Math.min(attempt, RUN_DATA_MODELS.length - 1)];
+    const retryHintPart = attempt > 0
+      ? [{
+        text: 'Retry because previous output was invalid JSON. Return only strict JSON, no markdown fences, no extra commentary, and ensure all string values are valid JSON strings.'
+      }]
+      : [];
+
+    const response = await ai.models.generateContent({
+      model,
+      contents: { parts: [...parts, ...retryHintPart] },
+      config: runDataConfig,
+    });
+
+    const text = response.text;
+    if (!text) {
+      lastError = new Error('No response from Gemini');
+      continue;
+    }
+
+    const candidates = collectJsonCandidates(text);
+    for (const candidate of candidates) {
+      try {
+        runData = JSON.parse(candidate) as RunData;
+        break;
+      } catch (err) {
+        lastError = err;
       }
     }
-  });
 
-  const text = response.text;
-  if (!text) {
-    throw new Error('No response from Gemini');
+    if (runData) {
+      break;
+    }
+
+    console.warn(`generateRunData: attempt ${attempt + 1} returned malformed JSON; retrying...`, lastError);
   }
 
-  const runData = JSON.parse(text) as RunData;
+  if (!runData) {
+    throw new Error(`Failed to parse Gemini JSON after ${RUN_DATA_MAX_ATTEMPTS} attempts: ${errorToMessage(lastError)}`);
+  }
+
   fetch('/api/save-run', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
