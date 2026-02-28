@@ -199,7 +199,15 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
                   setHoveredCard(null);
                 }}
                 onDrag={() => {
-                  /* Arrow stays fixed (card → target), no need to track cursor */
+                  const el = cardElMap.current.get(uniqueId);
+                  if (el && dragArrow) {
+                    const r = el.getBoundingClientRect();
+                    setDragArrow(prev => prev ? {
+                      ...prev,
+                      sx: r.left + r.width / 2,
+                      sy: r.top,
+                    } : null);
+                  }
                 }}
                 onDragEnd={(_e, info) => {
                   setDraggingCard(null);

@@ -433,9 +433,11 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       </div>
 
       {/* Top Center: BOSS FIGHT */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50">
-        <h2 className="text-[#ea580c] font-bold tracking-[0.2em] drop-shadow-md text-base uppercase">BOSS FIGHT</h2>
-      </div>
+      {(enemy as Boss).enrageThreshold && (
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50">
+          <h2 className="text-[#ea580c] font-bold tracking-[0.2em] drop-shadow-md text-base uppercase">BOSS FIGHT</h2>
+        </div>
+      )}
 
       {/* Top Right: Gold and Settings */}
       <div className="absolute top-6 right-6 z-50 flex items-center gap-4 text-yellow-400 font-bold drop-shadow-md text-lg">
