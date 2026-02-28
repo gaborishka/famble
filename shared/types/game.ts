@@ -39,6 +39,7 @@ export interface Enemy {
   currentHp: number;
   intents: Intent[];
   description: string;
+  isFlying?: boolean;
   audioPrompt?: string;
   imagePrompt?: string;
   imageObjectId?: string;

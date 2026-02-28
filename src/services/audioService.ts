@@ -52,8 +52,23 @@ interface SoundEffectOptions {
     durationSeconds?: number;
     theme?: string;
     source?: SoundSource;
+    cardType?: string;
     cacheTag?: string;
     fileTag?: string;
+}
+
+const SFX_VOLUMES: Record<SoundSource, number> = {
+    card: 0.45,
+    enemy: 0.5,
+    boss: 0.55,
+    generic: 0.45,
+};
+
+export function playSfx(url: string, source: SoundSource = 'generic', muted?: boolean): void {
+    if (!url || muted) return;
+    const audio = new Audio(url);
+    audio.volume = SFX_VOLUMES[source] ?? 0.45;
+    audio.play().catch(e => console.log('SFX autoplay prevented', e));
 }
 
 interface MusicOptions {
@@ -123,10 +138,11 @@ function composeSoundEffectPrompt(fragment: string, options: SoundEffectOptions)
     const flavor = sourceFlavor(options.source || 'generic');
 
     return normalizeWhitespace(
-        `Cinematic one-shot ${flavor} for a roguelike battle. ` +
-        `Theme context: ${theme}. ` +
-        `Core event: ${unique}. ` +
-        `Close foreground detail, sharp transient, short decay, no speech, no vocals, no background music bed.`
+        `Game sound effect: ${flavor} in a roguelike battle. ` +
+        `Theme: ${theme}. ` +
+        `Sound: ${unique}. ` +
+        `Warm body, punchy mid-range, smooth tail, no harsh high frequencies, ` +
+        `no speech, no vocals, no background music bed.`
     );
 }
 
@@ -143,7 +159,7 @@ function composeMusicPrompt(fragment: string, options: MusicOptions): string {
         `Theme context: ${theme}. ` +
         `Musical motif: ${unique}. ` +
         `Emotional arc: ${arc}. ` +
-        `No vocals, no spoken words, moderate dynamics, leave space for sound effects.`
+        `No vocals, no spoken words, moderate dynamics, keep peak loudness restrained, leave space for sound effects.`
     );
 }
 
@@ -165,6 +181,16 @@ function getVoiceSettings(theme?: string): { stability: number; similarity_boost
     }
 
     return { stability: 0.35, similarity_boost: 0.8 };
+}
+
+function selectDuration(source: SoundSource, cardType?: string): number {
+    if (source === 'boss') return 2.5;
+    if (source === 'enemy') return 2;
+    if (source === 'card') {
+        if (cardType === 'Power') return 2;
+        return 1.5;
+    }
+    return 2;
 }
 
 function toFileSafeKey(input: string): string {
@@ -548,17 +574,17 @@ export async function generateSoundEffect(prompt: string, options: SoundEffectOp
         return '';
     }
 
-    const durationSeconds = options.durationSeconds ?? (source === 'boss' ? 3 : source === 'enemy' ? 3 : 2);
+    const durationSeconds = options.durationSeconds ?? selectDuration(source, options.cardType);
     const templatedPrompt = composeSoundEffectPrompt(normalizedPrompt, { ...options, source, theme });
 
     const request = (async () => {
         try {
             let blob: Blob;
             try {
-                blob = await requestSoundGeneration(apiKey, templatedPrompt, durationSeconds, 0.4);
+                blob = await requestSoundGeneration(apiKey, templatedPrompt, durationSeconds, 0.6);
             } catch (templatedErr) {
                 console.warn('Templated SFX prompt failed, retrying with raw semantic prompt.', templatedErr);
-                blob = await requestSoundGeneration(apiKey, normalizedPrompt, durationSeconds, 0.3);
+                blob = await requestSoundGeneration(apiKey, normalizedPrompt, durationSeconds, 0.5);
             }
 
             return await finalizeAudioRequest(cacheKey, fileName, blob);
@@ -609,7 +635,7 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
         try {
             let blob: Blob;
             try {
-                blob = await requestSoundGeneration(apiKey, templatedPrompt, 15, 0.5);
+                blob = await requestSoundGeneration(apiKey, templatedPrompt, 15, 0.55);
             } catch (templatedErr) {
                 console.warn('Templated BGM prompt failed, retrying with raw semantic prompt.', templatedErr);
                 blob = await requestSoundGeneration(apiKey, normalizedPrompt, 15, 0.35);

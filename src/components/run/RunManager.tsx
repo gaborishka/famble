@@ -13,7 +13,7 @@ import {
   isRunDataV2,
 } from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
-import { CombatArena, CombatVictorySummary } from '../combat/CombatArena';
+import { CombatArena, CombatVictorySummary, CombatDefeatSummary } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
 import { generateFallbackNodeMap } from '../../engine/mapGenerator';
 import { EventScreen, EventEffects } from './EventScreen';
@@ -21,8 +21,10 @@ import { ShopScreen } from './ShopScreen';
 import { CardUpgradeScreen } from './CardUpgradeScreen';
 import { PlayerHUD } from './PlayerHUD';
 import { GameImage } from '../GameImage';
-import { saveRunSnapshot } from '../../services/geminiService';
+import { saveRunSnapshot, resolveManifestObjectUrl } from '../../services/geminiService';
 import { RoomGenerationOrchestrator } from '../../services/roomGenerationOrchestrator';
+import { DefeatScreen, DefeatStats } from './DefeatScreen';
+import { VictoryScreen, VictoryStats } from './VictoryScreen';
 
 interface RunManagerProps {
   runData: RunData;
@@ -64,7 +66,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [activeRunData, setActiveRunData] = useState<RunData>(runData);
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
-  const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire'>('map');
+  const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire' | 'defeat' | 'victory'>('map');
   const [deck, setDeck] = useState<Card[]>(() => {
     const strike = runData.cards.find(c => c.name.trim().toLowerCase() === 'strike') || runData.cards[0];
     const defend = runData.cards.find(c => c.name.trim().toLowerCase() === 'defend') || runData.cards[1] || runData.cards[0];
@@ -85,6 +87,14 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [campfireAction, setCampfireAction] = useState<'choosing' | 'smithing'>('choosing');
   const [rewardCards, setRewardCards] = useState<Card[]>([]);
   const [rewardStats, setRewardStats] = useState<RewardStats | null>(null);
+  const [defeatStats, setDefeatStats] = useState<DefeatStats | null>(null);
+  const [victoryStats, setVictoryStats] = useState<VictoryStats | null>(null);
+  const [runStats, setRunStats] = useState({
+    enemiesDefeated: 0,
+    damageDealt: 0,
+    cardsPlayed: 0,
+    turnsTaken: 0,
+  });
   const [roomGate, setRoomGate] = useState<{
     node: MapNode | null;
     status: 'loading' | 'failed';
@@ -315,10 +325,37 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       persistNodeCompletionIfV2(currentNodeId, true);
     }
 
+    const nextRunStats = {
+      enemiesDefeated: runStats.enemiesDefeated + summary.enemiesDefeated,
+      damageDealt: runStats.damageDealt + summary.damageDealt,
+      cardsPlayed: runStats.cardsPlayed + summary.cardsPlayed,
+      turnsTaken: runStats.turnsTaken + summary.turns,
+    };
+    setRunStats(nextRunStats);
+
     const activeBossId = isRunDataV2(activeRunData) ? activeRunData.boss?.id : activeRunData.boss.id;
     if (activeBossId && currentEnemies.some(e => e.id === activeBossId)) {
-      alert('Victory!');
-      onReset();
+      const boss = currentEnemies.find(e => e.id === activeBossId) as Boss;
+      const imageUrl = (isRunDataV2(activeRunData) ? activeRunData.boss?.imageUrl : null)
+        || boss?.imageUrl
+        || resolveManifestObjectUrl(activeRunData, boss?.imageObjectId);
+
+      setVictoryStats({
+        floorsCleared: totalFloors,
+        enemiesDefeated: nextRunStats.enemiesDefeated,
+        bossDefeatedName: boss?.name || 'The Boss',
+        totalDamageDealt: nextRunStats.damageDealt,
+        cardsPlayed: nextRunStats.cardsPlayed,
+        turnsTaken: nextRunStats.turnsTaken,
+        finalHp: summary.hp,
+        maxHp: summary.maxHp,
+        goldEarned: gold, // Not exactly total earned all run, but what they have at end
+        finalDeckCount: deck.length,
+        bossImageUrl: imageUrl || '',
+        runTitle: activeRunData.title || 'Adventure Complete',
+        runSubtitle: activeRunData.pdfName || 'Unknown Origin',
+      });
+      setView('victory');
     } else {
       const nextGold = gold + 25;
       let nextRewardCards = getRandomRewardCards();
@@ -344,9 +381,17 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     }
   };
 
-  const handleCombatDefeat = () => {
-    alert('Defeat!');
-    onReset();
+  const handleCombatDefeat = (summary: CombatDefeatSummary) => {
+    setDefeatStats({
+      floorsCleared: currentFloor - 1,
+      cardsPlayed: runStats.cardsPlayed + summary.cardsPlayed,
+      enemiesDefeated: runStats.enemiesDefeated + summary.enemiesDefeated,
+      turnsSurvived: runStats.turnsTaken + summary.turns,
+      damageDealt: runStats.damageDealt + summary.damageDealt,
+      finalDeckCount: summary.finalDeckCount,
+      killerName: summary.killerName,
+    });
+    setView('defeat');
   };
 
   // ── Reward ──
@@ -703,7 +748,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
                 >
                   <div className="w-10 h-10 rounded-full bg-emerald-500 flex items-center justify-center shrink-0 text-white shadow-lg">
                     <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
-                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                      <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
                     </svg>
                   </div>
                   <div className="flex-1 min-w-0">
@@ -750,6 +795,26 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
           )}
         </div>
       </div>
+    );
+  }
+
+  if (view === 'defeat' && defeatStats) {
+    return (
+      <DefeatScreen
+        stats={defeatStats}
+        onRetry={onReset}
+        onNewRun={onReset}
+      />
+    );
+  }
+
+  if (view === 'victory' && victoryStats) {
+    return (
+      <VictoryScreen
+        stats={victoryStats}
+        onShare={() => console.log('Share run clicked')}
+        onPlayAgain={onReset}
+      />
     );
   }
 

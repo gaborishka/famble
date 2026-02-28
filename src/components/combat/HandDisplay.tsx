@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Card } from '../../../shared/types/game';
 import { CardComponent } from './CardComponent';
 import { motion, AnimatePresence } from 'motion/react';
@@ -7,8 +7,10 @@ interface HandDisplayProps {
   hand: Card[];
   energy: number;
   onPlayCard: (card: Card, index: number) => void;
+  onDragPlayCard?: (card: Card, index: number, targetEnemyIndex: number) => void;
   targetEnemyIndex?: number;
   multipleEnemies?: boolean;
+  attackTargetEnemyIndexes?: number[];
 }
 
 /* ─── Quadratic-bezier helpers ───────────────────────────────── */
@@ -100,22 +102,46 @@ const TargetingArrow: React.FC<{
 
 /* ─── Resolve target element centre (viewport coords) ─────── */
 
-function getTargetCenter(cardType: string, targetEnemyIndex?: number): { x: number; y: number } | null {
-  let id: string;
-  if (cardType === 'Attack') {
-    id = targetEnemyIndex !== undefined ? `combat-enemy-${targetEnemyIndex}` : 'combat-enemy-0';
-  } else {
-    id = 'combat-player';
-  }
-  const el = document.getElementById(id);
+function getEnemyCenter(enemyIndex: number): { x: number; y: number } | null {
+  const el = document.getElementById(`combat-enemy-${enemyIndex}`);
   if (!el) return null;
   const r = el.getBoundingClientRect();
   return { x: r.left + r.width / 2, y: r.top + r.height * 0.45 };
 }
 
+function getTargetCenter(cardType: string, targetEnemyIndex?: number): { x: number; y: number } | null {
+  if (cardType === 'Attack') {
+    return getEnemyCenter(targetEnemyIndex ?? 0);
+  }
+  const el = document.getElementById('combat-player');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height * 0.45 };
+}
+
+/** Find the enemy DOM element closest to a viewport point from allowed targets only. */
+function findNearestEnemy(px: number, py: number, indexes: number[]): number {
+  let bestIdx = indexes[0] ?? 0;
+  let bestDist = Infinity;
+  for (const idx of indexes) {
+    const center = getEnemyCenter(idx);
+    if (!center) continue;
+    const dx = center.x - px;
+    const dy = center.y - py;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = idx;
+    }
+  }
+  return bestIdx;
+}
+
 /* ─── Hand display ───────────────────────────────────────────── */
 
-export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCard, targetEnemyIndex, multipleEnemies }) => {
+export const HandDisplay: React.FC<HandDisplayProps> = ({
+  hand, energy, onPlayCard, onDragPlayCard, targetEnemyIndex, multipleEnemies, attackTargetEnemyIndexes = [],
+}) => {
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [draggingCard, setDraggingCard] = useState<string | null>(null);
   const [dragArrow, setDragArrow] = useState<{
@@ -125,12 +151,46 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
   } | null>(null);
 
   const cardElMap = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const dragTargetRef = useRef<number>(0);
 
   const arrowColor = dragArrow
     ? dragArrow.cardType === 'Attack' ? '#dc2626'
       : dragArrow.cardType === 'Defense' ? '#3b82f6'
       : '#d97706'
     : '#dc2626';
+  const effectiveAttackTargetIndexes = attackTargetEnemyIndexes.length > 0
+    ? attackTargetEnemyIndexes
+    : [targetEnemyIndex ?? 0];
+
+  /** Update arrow start (card) + end (nearest enemy or player) during drag. */
+  const updateArrowDuringDrag = useCallback((uniqueId: string, cardType: string) => {
+    const el = cardElMap.current.get(uniqueId);
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const sx = r.left + r.width / 2;
+    const sy = r.top;
+
+    if (cardType === 'Attack' && multipleEnemies && effectiveAttackTargetIndexes.length > 1) {
+      // Arrow tip follows the nearest enemy to the card's current position
+      const nearestIdx = findNearestEnemy(sx, sy, effectiveAttackTargetIndexes);
+      dragTargetRef.current = nearestIdx;
+      const target = getEnemyCenter(nearestIdx);
+      if (target) {
+        setDragArrow(prev => prev ? { ...prev, sx, sy, ex: target.x, ey: target.y } : null);
+      }
+    } else if (cardType === 'Attack') {
+      const fallbackTargetIdx = effectiveAttackTargetIndexes[0] ?? 0;
+      dragTargetRef.current = fallbackTargetIdx;
+      const target = getEnemyCenter(fallbackTargetIdx);
+      if (target) {
+        setDragArrow(prev => prev ? { ...prev, sx, sy, ex: target.x, ey: target.y } : null);
+      } else {
+        setDragArrow(prev => prev ? { ...prev, sx, sy } : null);
+      }
+    } else {
+      setDragArrow(prev => prev ? { ...prev, sx, sy } : null);
+    }
+  }, [multipleEnemies, effectiveAttackTargetIndexes]);
 
   return (
     <>
@@ -191,7 +251,8 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
                 dragConstraints={{ top: -1000, bottom: 0, left: -1000, right: 1000 }}
                 onDragStart={() => {
                   const el = cardElMap.current.get(uniqueId);
-                  const target = getTargetCenter(card.type, targetEnemyIndex);
+                  const targetEnemyIdx = effectiveAttackTargetIndexes[0] ?? targetEnemyIndex ?? 0;
+                  const target = getTargetCenter(card.type, targetEnemyIdx);
                   if (el && target) {
                     const r = el.getBoundingClientRect();
                     setDragArrow({
@@ -202,25 +263,20 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({ hand, energy, onPlayCa
                       cardType: card.type,
                     });
                   }
+                  dragTargetRef.current = targetEnemyIdx;
                   setDraggingCard(uniqueId);
                   setHoveredCard(null);
                 }}
-                onDrag={() => {
-                  const el = cardElMap.current.get(uniqueId);
-                  if (el && dragArrow) {
-                    const r = el.getBoundingClientRect();
-                    setDragArrow(prev => prev ? {
-                      ...prev,
-                      sx: r.left + r.width / 2,
-                      sy: r.top,
-                    } : null);
-                  }
-                }}
+                onDrag={() => updateArrowDuringDrag(uniqueId, card.type)}
                 onDragEnd={(_e, info) => {
                   setDraggingCard(null);
                   setDragArrow(null);
                   if (info.offset.y < -150) {
-                    onPlayCard(card, index);
+                    if (card.type === 'Attack' && multipleEnemies && onDragPlayCard) {
+                      onDragPlayCard(card, index, dragTargetRef.current);
+                    } else {
+                      onPlayCard(card, index);
+                    }
                   }
                 }}
                 onClick={() => !disabled && !isDragging && onPlayCard(card, index)}

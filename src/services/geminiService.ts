@@ -32,6 +32,8 @@ let currentRunId = '';
 
 const GLOBAL_ROOM_ID = 'global';
 export const PLAYER_PORTRAIT_PROMPT = 'A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up';
+const BATTLE_STAGE_FLOOR_PROMPT_RULE = 'Include one continuous, straight, horizontal battle platform at a fixed height across the full image width, around the lower third. This platform is the ground line where both player and ground enemies stand. Keep this ground level consistent across all rooms. Do not tilt, curve, split, or break the platform near the combat area. The region below the platform must stay visually readable with floor continuation, texture, reflections, or environment detail. Never render the lower area as a pure black strip, empty void, or heavy blackout gradient.';
+const FLYING_ENEMY_KEYWORDS = /\b(flying|fly|airborne|winged|hover|hovering|levitating|levitation|floating|drone|jetpack|wisp|specter|ghost|bat|harpy|griffin)\b/i;
 
 export function getCurrentRunId(): string {
   return currentRunId;
@@ -67,6 +69,22 @@ export function buildEnemySpritePrompt(enemyPrompt: string): string {
 
 export function buildBossSpritePrompt(bossPrompt: string): string {
   return `A character sprite of ${bossPrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`;
+}
+
+function normalizeBattleBackgroundPrompt(prompt: string | undefined, theme: string): string {
+  const basePrompt = (prompt || `A scenic, atmospheric background for a fantasy battle, ${theme} theme, 2D digital art`).trim();
+  const lower = basePrompt.toLowerCase();
+  if (lower.includes('horizontal battle platform at a fixed height')) {
+    return basePrompt;
+  }
+  return `${basePrompt}. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}`;
+}
+
+function inferFlyingEnemyFromText(enemy: Partial<Enemy> | undefined): boolean {
+  if (!enemy) return false;
+  if (typeof enemy.isFlying === 'boolean') return enemy.isFlying;
+  const source = `${enemy.name || ''} ${enemy.description || ''} ${enemy.imagePrompt || ''}`;
+  return FLYING_ENEMY_KEYWORDS.test(source);
 }
 
 function createManifestEntry(params: {
@@ -201,12 +219,13 @@ Create exactly 7 cards in total. The first card MUST be named 'Strike' (type Att
 Also create exactly 4 unique normal enemies (ranging from simple to elite difficulty), 1 boss, and 1 synergy rule.
 Enemies do not use a deck of cards. Instead, their actions are dictated by a fixed sequence of 'intents' that loops. Simple enemies should have a sequence of 2-3 intents, medium 3-4, elite 3-5, and the boss 4-7 intents.
 Intents can be simple (Attack, Defend, Buff, Debuff, Unknown) or combined (AttackDefend, AttackDebuff, AttackBuff). Use 'value' for the primary amount (e.g. damage), and 'secondaryValue' for the secondary effect (e.g. block amount or debuff stacks).
+For enemies, set 'isFlying' to true only for airborne units (flying, hovering, levitating, winged). Otherwise set it to false.
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
 For audio fields, output ONLY the unique semantic fragment, not full production instructions.
 Audio fragment rules:
 - Keep fragments concrete and cinematic (specific source/action/material/emotion), avoid generic words like "epic sound effect".
 - Avoid technical directives like "loop", "high quality", "SFX", "music track", "audio", "stereo", "mix".
-- For card/enemy/boss audioPrompt: 4-14 words, one event-focused phrase.
+- For card/enemy/boss audioPrompt: 4-14 words, one event-focused phrase describing physical action and material. Prefer warm, weighty, satisfying impacts — avoid shrill, piercing, or harsh sounds (no screech, shriek, piercing whistle).
 - For roomMusicPrompt/bossMusicPrompt: 6-18 words, describing motif/instrumentation/mood only.
 - Do not include spoken dialogue inside non-TTS prompts.
 Boss must include a 'narratorText' opening line (6-20 words), plus narrator voice hints:
@@ -237,7 +256,7 @@ Return the data strictly matching the provided JSON schema.`,
                 magicNumber: { type: Type.INTEGER },
                 tags: { type: Type.ARRAY, items: { type: Type.STRING } },
                 imagePrompt: { type: Type.STRING, description: 'A visual description of the card for image generation' },
-                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for card SFX only. Example: "tempered steel slash through wet parchment". Do not include technical audio instructions.' }
+                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for card SFX only. Example: "tempered steel slash through wet parchment". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' }
               },
               required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt']
             }
@@ -254,8 +273,9 @@ Return the data strictly matching the provided JSON schema.`,
                 maxHp: { type: Type.INTEGER },
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
+                isFlying: { type: Type.BOOLEAN, description: 'True only if this enemy fights in the air (flying/hovering/levitating). False for ground enemies.' },
                 imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
-                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for enemy attack SFX only. Example: "rusted halberd whoosh with chain rattle". Do not include technical audio instructions.' },
+                audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for enemy attack SFX only. Example: "rusted halberd whoosh with chain rattle". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
                 intents: {
                   type: Type.ARRAY,
                   items: {
@@ -282,7 +302,7 @@ Return the data strictly matching the provided JSON schema.`,
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
               imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
-              audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Do not include technical audio instructions.' },
+              audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
               narratorText: { type: Type.STRING, description: 'A dramatic boss opening dialogue line for TTS, 6-20 words.' },
               narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority".' },
               narratorVoiceGender: { type: Type.STRING, description: 'Preferred narrator gender hint: male, female, or neutral.' },
@@ -431,7 +451,7 @@ export async function generateGameImage(
 
   let prefix = "A 2D vector art style game asset, clean lines, flat colors, highly detailed, fantasy game UI element. ";
   if (type === 'background') {
-    prefix = "A 2D video game combat stage background, side-scrolling perspective, must include a distinct flat floor or ground area at the bottom for characters to stand on, clean lines, flat colors, highly detailed. ";
+    prefix = `A 2D video game combat stage background, side-scrolling perspective, clean lines, flat colors, highly detailed. ${BATTLE_STAGE_FLOOR_PROMPT_RULE} `;
   } else if (type === 'character') {
     prefix = "A 2D video game character sprite, clean lines, flat colors, solid green screen background (#00FF00), highly detailed, isolated. ";
   }
@@ -596,6 +616,7 @@ const enemySchema = {
     maxHp: { type: Type.INTEGER },
     currentHp: { type: Type.INTEGER },
     description: { type: Type.STRING },
+    isFlying: { type: Type.BOOLEAN },
     imagePrompt: { type: Type.STRING },
     audioPrompt: { type: Type.STRING },
     intents: {
@@ -700,7 +721,10 @@ async function requestStructuredJson<T>(
 }
 
 export function buildDefaultBattleBackgroundPrompt(theme: string): string {
-  return `A scenic, atmospheric background for a fantasy battle, ${theme} theme, featuring a very wide and prominent flat floor covering the bottom third of the image, 2D digital art`;
+  return normalizeBattleBackgroundPrompt(
+    `A scenic, atmospheric background for a fantasy battle, ${theme} theme, featuring a very wide and prominent flat floor covering the bottom third of the image, 2D digital art`,
+    theme
+  );
 }
 
 function createStrikeCard(theme: string): Card {
@@ -765,6 +789,7 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElit
     maxHp: 28,
     currentHp: 28,
     description: 'A vigilant foe guarding the first path.',
+    isFlying: false,
     intents: [
       { type: 'Attack', value: 6, description: 'Deal 6 damage.' },
       { type: 'Defend', value: 5, description: 'Gain 5 block.' },
@@ -781,6 +806,7 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElit
   const rawHp = Math.max(1, Number(enemy.maxHp) || fallback.maxHp);
   const cappedHp = Math.min(rawHp, maxHpCap);
   const intents = Array.isArray(enemy.intents) && enemy.intents.length > 0 ? enemy.intents : fallback.intents;
+  const isFlying = inferFlyingEnemyFromText(enemy);
 
   return {
     ...fallback,
@@ -790,6 +816,7 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElit
     maxHp: cappedHp,
     currentHp: cappedHp,
     description: enemy.description || fallback.description,
+    isFlying,
     intents: capIntentDamage(intents, maxAttackDmg),
     imagePrompt: enemy.imagePrompt || fallback.imagePrompt,
     audioPrompt: enemy.audioPrompt || fallback.audioPrompt,
@@ -987,8 +1014,10 @@ Constraints:
 - defend card MUST be Skill cost 1 block 5 with simple text.
 - uniqueCard must be a distinct non-starter card.
 - firstEnemy must be a basic early enemy suitable for floor 1.
+- firstEnemy.isFlying must be true only if the enemy is airborne; otherwise false.
 - roomMusicPrompt must be short and thematic.
-- essentialSfxPrompts should include 4 concise prompts: strike, defend, unique card, first enemy.`,
+- essentialSfxPrompts should include 4 concise prompts: strike, defend, unique card, first enemy.
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
@@ -1201,14 +1230,15 @@ function getRoomPromptContext(runData: RunDataV2): string {
 
 async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Promise<CombatRoomContent> {
   const config = {
-    systemInstruction: `Generate content for a single roguelike combat room. Return strict JSON.`,
+    systemInstruction: `Generate content for a single roguelike combat room. Return strict JSON.
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
         enemy: enemySchema,
         rewardCards: { type: Type.ARRAY, items: cardSchema, minItems: 1, maxItems: 3 },
-        backgroundPrompt: { type: Type.STRING },
+        backgroundPrompt: { type: Type.STRING, description: `Scene prompt for combat background. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}` },
         roomMusicPrompt: { type: Type.STRING },
       },
       required: ['enemy', 'rewardCards', 'backgroundPrompt'],
@@ -1218,7 +1248,9 @@ async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Pro
   const statGuidance = node.type === 'Elite'
     ? ' Elite enemies should have 35-55 HP and 8-12 attack damage.'
     : ' Normal enemies should have 20-35 HP and 5-9 attack damage.';
-  const parts = [{ text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and up to 3 reward cards.${statGuidance}` }];
+  const parts = [{
+    text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and up to 3 reward cards.${statGuidance} Enemy must include isFlying=true only if airborne, otherwise false. Background prompt must enforce one fixed horizontal ground platform for player and ground enemies.`
+  }];
   try {
     const parsed = await requestStructuredJson<{
       enemy: Partial<Enemy>;
@@ -1272,7 +1304,7 @@ async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Pro
       : [registerCardObjects(manifestScope, node.id, fallbackReward, 'reward_fallback')];
 
     const roomMusicPrompt = parsed.roomMusicPrompt || runData.roomMusicPrompt;
-    const backgroundPrompt = parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme);
+    const backgroundPrompt = normalizeBattleBackgroundPrompt(parsed.backgroundPrompt, runData.theme);
     const enemiesWithObjects = allEnemies.map((e, idx) => registerEnemyObjects(manifestScope, node.id, e, `${node.type.toLowerCase()}_${idx}`));
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
@@ -1384,20 +1416,23 @@ async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Pro
 
 async function generateBossRoomPayload(runData: RunDataV2, node: MapNode): Promise<RoomContentPayload> {
   const config = {
-    systemInstruction: `Generate content for a single roguelike boss room. Return strict JSON.`,
+    systemInstruction: `Generate content for a single roguelike boss room. Return strict JSON.
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
         boss: bossSchema,
-        backgroundPrompt: { type: Type.STRING },
+        backgroundPrompt: { type: Type.STRING, description: `Scene prompt for boss combat background. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}` },
         bossMusicPrompt: { type: Type.STRING },
       },
       required: ['boss', 'backgroundPrompt', 'bossMusicPrompt'],
     },
   };
 
-  const parts = [{ text: `Room type: Boss. ${getRoomPromptContext(runData)} Create a dramatic boss encounter.` }];
+  const parts = [{
+    text: `Room type: Boss. ${getRoomPromptContext(runData)} Create a dramatic boss encounter. Background prompt must enforce one fixed horizontal ground platform where player and boss stand.`
+  }];
   try {
     const parsed = await requestStructuredJson<{ boss: Partial<Boss>; backgroundPrompt?: string; bossMusicPrompt?: string }>(
       'generateBossRoomPayload',
@@ -1423,7 +1458,7 @@ async function generateBossRoomPayload(runData: RunDataV2, node: MapNode): Promi
       ),
     };
     const boss = registerBossObjects(manifestScope, node.id, bossRaw);
-    const backgroundPrompt = parsed.backgroundPrompt || buildDefaultBattleBackgroundPrompt(runData.theme);
+    const backgroundPrompt = normalizeBattleBackgroundPrompt(parsed.backgroundPrompt, runData.theme);
     const bossMusicPrompt = parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
@@ -1502,7 +1537,8 @@ async function generateBossRoomPayload(runData: RunDataV2, node: MapNode): Promi
 
 async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Promise<EventRoomContent> {
   const config = {
-    systemInstruction: `Generate content for a single roguelike event room. Return strict JSON with exactly 3 choices.`,
+    systemInstruction: `Generate content for a single roguelike event room. Return strict JSON with exactly 3 choices.
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
@@ -1649,7 +1685,8 @@ async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Prom
 
 async function generateShopRoomPayload(runData: RunDataV2, node: MapNode): Promise<ShopRoomContent> {
   const config = {
-    systemInstruction: `Generate content for a single roguelike shop room. Return strict JSON with 3 shop cards.`,
+    systemInstruction: `Generate content for a single roguelike shop room. Return strict JSON with 3 shop cards.
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
