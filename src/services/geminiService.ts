@@ -246,11 +246,11 @@ export async function preloadFirstCombatImages(runData: RunData): Promise<void> 
 
   // Player portrait and sprite
   promises.push(generateGameImage(`A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up`, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
-  promises.push(generateGameImage(`A character sprite of a heroic protagonist, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`, 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
+  promises.push(generateGameImage(`A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`, 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
 
   // First enemy sprite
   if (runData.enemies.length > 0 && runData.enemies[0].imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${runData.enemies[0].imagePrompt}, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
+    promises.push(generateGameImage(`A character sprite of ${runData.enemies[0].imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
   }
 
   // All starting cards
@@ -270,13 +270,13 @@ export async function preloadBackgroundImages(runData: RunData): Promise<void> {
   for (let i = 1; i < runData.enemies.length; i++) {
     const enemy = runData.enemies[i];
     if (enemy.imagePrompt) {
-      promises.push(generateGameImage(`A character sprite of ${enemy.imagePrompt}, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
+      promises.push(generateGameImage(`A character sprite of ${enemy.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
     }
   }
 
   // Boss
   if (runData.boss && runData.boss.imagePrompt) {
-    promises.push(generateGameImage(`A character sprite of ${runData.boss.imagePrompt}, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
+    promises.push(generateGameImage(`A character sprite of ${runData.boss.imagePrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`, 'character').catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
   }
 
   // We don't await this intentionally so it runs in the background
