@@ -204,7 +204,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
               x: { duration: 0.4 }
             }}
           >
-            <GameImage prompt={`A character sprite of a heroic protagonist, standing on an empty background, rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-[120%] h-[120%] object-contain drop-shadow-2xl" alt="Player" type="character" />
+            <GameImage prompt={`A character sprite of a heroic protagonist, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-[120%] h-[120%] object-contain drop-shadow-2xl" alt="Player" type="character" />
           </motion.div>
         </div>
 
@@ -262,7 +262,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             }}
           >
             {gameState.currentEnemy.imagePrompt ? (
-              <GameImage prompt={`A character sprite of ${gameState.currentEnemy.imagePrompt}, standing on an empty background, enemy character, 2D vector art`} className="w-[120%] h-[120%] object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)]" alt={gameState.currentEnemy.name} type="character" />
+              <GameImage prompt={`A character sprite of ${gameState.currentEnemy.imagePrompt}, standing on a solid green background (#00FF00), enemy character, 2D vector art`} className="w-[120%] h-[120%] object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)]" alt={gameState.currentEnemy.name} type="character" />
             ) : (
               <span className="text-8xl z-10 drop-shadow-lg">{(enemy as Boss).enrageThreshold ? '👑' : '👹'}</span>
             )}
