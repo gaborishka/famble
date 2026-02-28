@@ -187,16 +187,16 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       </div>
 
       {/* Arena Center */}
-      <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative">
+      <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative z-10">
         {/* Player Sprite */}
-        <div className="flex flex-col items-center justify-end h-[28rem] z-10 relative">
+        <div className="flex flex-col items-center justify-end h-[28rem] z-20 relative w-64">
           {/* Ground Shadow */}
           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
             key={`player-${gameState.playerHp}`}
-            className="w-56 h-80 flex items-center justify-center relative z-10"
+            className="w-full h-80 flex items-center justify-center relative z-10"
           >
-            <GameImage prompt={`A character sprite of a heroic protagonist, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-[120%] h-[120%] object-contain drop-shadow-2xl" alt="Player" type="character" />
+            <GameImage prompt={`A character sprite of a heroic protagonist, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-full h-full object-contain scale-[1.35] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none" alt="Player" type="character" />
           </motion.div>
         </div>
 
