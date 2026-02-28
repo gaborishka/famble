@@ -83,9 +83,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       {/* Dynamic Background */}
       <div className="absolute inset-0 z-[-1]">
         <GameImage
-          prompt={`A scenic, atmospheric background for a fantasy battle, ${runData.theme} theme, inside a room, 2D digital art`}
+          prompt={`A scenic, atmospheric background for a fantasy battle, ${runData.theme} theme, featuring a very wide and prominent flat floor covering the bottom third of the image, 2D digital art`}
           type="background"
-          className="w-full h-full object-cover opacity-60 absolute inset-0"
+          className="w-full h-full object-cover object-bottom opacity-60 absolute inset-0"
           alt="Combat Background"
         />
         <div className="absolute inset-0 bg-gradient-to-b from-[#0a0f1c]/40 via-transparent to-[#0a0f1c]/90" />
@@ -173,9 +173,11 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       </div>
 
       {/* Arena Center */}
-      <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-12 pt-16">
+      <div className="flex-1 flex justify-between items-end px-16 lg:px-48 pb-4 lg:pb-8 pt-16 relative">
         {/* Player Sprite */}
         <div className="flex flex-col items-center justify-end h-[28rem] z-10 relative">
+          {/* Ground Shadow */}
+          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
             key={`player-${gameState.playerHp}`}
             className="w-56 h-80 flex items-center justify-center relative z-10"
@@ -228,6 +230,8 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             </div>
           </div>
 
+          {/* Ground Shadow */}
+          <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-40 h-8 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
             key={`enemy-${enemy.id}-${gameState.currentEnemy.currentHp}`}
             className="w-72 h-80 flex items-center justify-center relative z-10"

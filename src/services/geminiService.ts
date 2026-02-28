@@ -160,7 +160,7 @@ export async function generateGameImage(prompt: string, type: 'asset' | 'backgro
 
   let prefix = "A 2D vector art style game asset, clean lines, flat colors, highly detailed, fantasy game UI element. ";
   if (type === 'background') {
-    prefix = "A 2D video game background, side-scrolling perspective, clean lines, flat colors, highly detailed. ";
+    prefix = "A 2D video game combat stage background, side-scrolling perspective, must include a distinct flat floor or ground area at the bottom for characters to stand on, clean lines, flat colors, highly detailed. ";
   } else if (type === 'character') {
     prefix = "A 2D video game character sprite, clean lines, flat colors, solid white background, highly detailed, isolated. ";
   }
