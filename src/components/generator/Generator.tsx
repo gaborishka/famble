@@ -1,7 +1,14 @@
 import React, { useState, useRef } from 'react';
-import { RunData } from '../../../shared/types/game';
-import { generateRunData, preloadFirstCombatImages, preloadBackgroundImages, setCurrentRunId } from '../../services/geminiService';
-import { preloadRunAudio } from '../../services/audioService';
+import { GenerationMode, RunData, isRunDataV2 } from '../../../shared/types/game';
+import {
+  generateRunBootstrap,
+  preloadEssentialImages,
+  preloadFirstCombatImages,
+  preloadBackgroundImages,
+  setCurrentRunId,
+} from '../../services/geminiService';
+import { preloadEssentialAudio, preloadRunAudio } from '../../services/audioService';
+import { processDocumentOCR, buildEnhancedPrompt, isUrlInput, MistralDocumentInput } from '../../services/mistralService';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUp, Globe, ArrowRight, Sparkles, FileText, Check } from 'lucide-react';
 
@@ -33,13 +40,23 @@ const defaultLoadingView: LoadingView = {
 };
 
 const loadingViewsByMessage: Record<string, LoadingView> = {
+  'Analyzing Document...': {
+    title: 'Reading your document...',
+    subtitle: 'Extracting content with Mistral Document AI',
+    progress: 12,
+    stepLabel: 'Analyzing document structure...',
+    step: 1,
+    totalSteps: 7,
+    caption: "Your document holds secrets. Let's deal them out.",
+    finePrint: 'This usually takes 10-20 seconds'
+  },
   'Generating Run...': {
     title: 'Generating Run Data...',
     subtitle: 'Summoning your custom adventure...',
     progress: 28,
     stepLabel: 'Preparing your run...',
-    step: 1,
-    totalSteps: 6,
+    step: 2,
+    totalSteps: 7,
     caption: "Your document holds secrets. Let's deal them out.",
     finePrint: 'This usually takes 30-60 seconds'
   },
@@ -48,8 +65,8 @@ const loadingViewsByMessage: Record<string, LoadingView> = {
     subtitle: 'Building a unique run from your document',
     progress: 45,
     stepLabel: 'Creating cards and enemies...',
-    step: 2,
-    totalSteps: 6,
+    step: 3,
+    totalSteps: 7,
     caption: "Your document holds secrets. Let's deal them out.",
     finePrint: 'This usually takes 30-60 seconds'
   },
@@ -58,8 +75,8 @@ const loadingViewsByMessage: Record<string, LoadingView> = {
     subtitle: 'Infusing room one with generated visuals',
     progress: 72,
     stepLabel: 'Preloading room graphics...',
-    step: 4,
-    totalSteps: 6,
+    step: 5,
+    totalSteps: 7,
     caption: "Your document holds secrets. Let's deal them out.",
     finePrint: 'This usually takes 30-60 seconds'
   },
@@ -68,8 +85,8 @@ const loadingViewsByMessage: Record<string, LoadingView> = {
     subtitle: 'Forging SFX and music for your run',
     progress: 90,
     stepLabel: 'Synthesizing battle audio...',
-    step: 5,
-    totalSteps: 6,
+    step: 6,
+    totalSteps: 7,
     caption: "Your document holds secrets. Let's deal them out.",
     finePrint: 'This usually takes 30-60 seconds'
   },
@@ -133,6 +150,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pastRuns, setPastRuns] = useState<{ runId: string, theme: string, timestamp: number }[]>([]);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
+  const [generationMode, setGenerationMode] = useState<GenerationMode>('fast_start');
 
   React.useEffect(() => {
     fetch('/api/list-runs')
@@ -158,7 +176,11 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       setError('Please provide a URL or prompt.');
       return;
     }
-    await doGenerate(prompt);
+    if (isUrlInput(prompt)) {
+      await doGenerate(prompt, undefined, { type: 'url', url: prompt });
+    } else {
+      await doGenerate(prompt);
+    }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -172,10 +194,9 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
     const reader = new FileReader();
     reader.onloadend = async () => {
       const base64Data = (reader.result as string).split(',')[1];
-      await doGenerate('Generate a run based on this document.', {
-        mimeType: file.type,
-        data: base64Data
-      });
+      const fileData = { mimeType: file.type, data: base64Data };
+      const mistralInput: MistralDocumentInput = { type: 'file', mimeType: file.type, base64Data };
+      await doGenerate('Generate a run based on this document.', fileData, mistralInput);
     };
     reader.readAsDataURL(file);
   };
@@ -192,12 +213,19 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       const runData = await res.json() as RunData;
 
       setLoadingMessage('Restoring Room 1 Graphics...');
-      await preloadFirstCombatImages(runData);
+      if (isRunDataV2(runData)) {
+        await preloadEssentialImages(runData);
+      } else {
+        await preloadFirstCombatImages(runData);
+      }
 
       setLoadingMessage('Restoring Audio Magic...');
-      await preloadRunAudio(runData);
-
-      preloadBackgroundImages(runData);
+      if (isRunDataV2(runData)) {
+        await preloadEssentialAudio(runData);
+      } else {
+        await preloadRunAudio(runData);
+        preloadBackgroundImages(runData);
+      }
 
       onGenerated(runData);
     } catch (err: any) {
@@ -207,24 +235,56 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
     }
   };
 
-  const doGenerate = async (finalPrompt: string, fileData?: { mimeType: string; data: string }) => {
+  const doGenerate = async (
+    finalPrompt: string,
+    fileData?: { mimeType: string; data: string },
+    mistralInput?: MistralDocumentInput,
+  ) => {
     setIsGenerating(true);
     setLoadingMessage('Generating Run Data...');
     setError(null);
-    if (!fileData) {
+    if (!fileData && !mistralInput) {
       setUploadedFileName(null);
     }
 
     try {
-      const runData = await generateRunData(finalPrompt, fileData);
+      let effectivePrompt = finalPrompt;
+      let skipFileData = false;
+
+      // Mistral Document AI preprocessing
+      if (mistralInput) {
+        setLoadingMessage('Analyzing Document...');
+        try {
+          const extraction = await processDocumentOCR(mistralInput);
+          if (extraction && extraction.markdown.trim().length > 0) {
+            console.log(
+              `Mistral OCR: extracted ${extraction.pageCount} pages, ` +
+              `${extraction.markdown.length} chars, ` +
+              `annotations: ${extraction.annotations ? 'yes' : 'no'}`
+            );
+            effectivePrompt = buildEnhancedPrompt(finalPrompt, extraction);
+            skipFileData = true;
+          } else {
+            console.warn('Mistral OCR returned empty result, falling back to direct Gemini');
+          }
+        } catch (mistralErr) {
+          console.warn('Mistral OCR failed, falling back to direct Gemini:', mistralErr);
+        }
+      }
+
+      setLoadingMessage('Generating Run Data...');
+      const runData = await generateRunBootstrap(
+        effectivePrompt,
+        fileData,
+        { mode: generationMode, prefetchDepth: 2 },
+        skipFileData ? { skipFileData: true } : undefined,
+      );
 
       setLoadingMessage('Preloading Room 1 Graphics...');
-      await preloadFirstCombatImages(runData);
+      await preloadEssentialImages(runData);
 
       setLoadingMessage('Synthesizing Audio Magic...');
-      await preloadRunAudio(runData);
-
-      preloadBackgroundImages(runData);
+      await preloadEssentialAudio(runData);
 
       onGenerated(runData);
     } catch (err: any) {
@@ -260,13 +320,45 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
         <div className="text-center mb-16 space-y-4 max-w-2xl">
           <h1 className="text-4xl md:text-5xl font-bold tracking-tight">Any Content → Unique Roguelike</h1>
           <p className="text-slate-400 text-base md:text-lg px-8">
-            Upload a PDF or paste a URL — get a unique deckbuilder with custom cards, enemies, and music.
+            Upload a document or paste a URL — get a unique deckbuilder with custom cards, enemies, and music.
           </p>
         </div>
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-6 py-3 rounded-xl mb-8 max-w-md text-center">
             {error}
+          </div>
+        )}
+
+        {!forceLoadingPreview && (
+          <div className="mb-8 w-full max-w-2xl rounded-2xl border border-slate-700/70 bg-slate-900/55 p-4 sm:p-5">
+            <div className="text-sm uppercase tracking-wider text-slate-400 mb-3">Generation Settings</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setGenerationMode('fast_start')}
+                className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                  generationMode === 'fast_start'
+                    ? 'border-orange-400 bg-orange-500/15 text-orange-100'
+                    : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
+                }`}
+              >
+                <div className="font-semibold">Fast Start</div>
+                <div className="text-xs mt-1 text-slate-400">Launch first fight ASAP, prefetch next rooms in background.</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setGenerationMode('test_on_demand')}
+                className={`rounded-xl border px-4 py-3 text-left transition-colors ${
+                  generationMode === 'test_on_demand'
+                    ? 'border-sky-400 bg-sky-500/15 text-sky-100'
+                    : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
+                }`}
+              >
+                <div className="font-semibold">Test On-Demand</div>
+                <div className="text-xs mt-1 text-slate-400">Strict gating: each room is generated before it can open.</div>
+              </button>
+            </div>
           </div>
         )}
 
@@ -287,16 +379,16 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
             }}
             onClick={() => fileInputRef.current?.click()}
           >
-            <div className="absolute top-3 left-3 sm:top-4 sm:left-4 bg-black text-white rounded-full px-3 sm:px-4 py-1.5 text-[10px] font-bold tracking-wider">PDF</div>
+            <div className="absolute top-3 left-3 sm:top-4 sm:left-4 bg-black text-white rounded-full px-3 sm:px-4 py-1.5 text-[10px] font-bold tracking-wider">DOCS</div>
 
             <div className="flex-1 flex flex-col items-center justify-center pt-8 sm:pt-10 px-4 sm:px-6 text-center">
               <FileUp className="w-10 h-10 sm:w-14 sm:h-14 text-white mb-3 sm:mb-5" />
-              <h2 className="text-2xl sm:text-3xl font-serif text-white mb-1.5 sm:mb-2">Drop PDF Here</h2>
+              <h2 className="text-2xl sm:text-3xl font-serif text-white mb-1.5 sm:mb-2">Drop File Here</h2>
               <p className="text-slate-400 text-xs sm:text-sm italic">or click to browse</p>
             </div>
 
             <div className="bg-[#f97316] w-full py-1.5 sm:py-2 text-center text-black text-[10px] sm:text-[11px] font-bold tracking-widest uppercase">
-              Max 50 pages
+              PDF, DOCX, PPTX, Images
             </div>
 
             <div className="bg-slate-900/60 py-3.5 sm:py-5 px-4 text-center">
@@ -304,7 +396,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
                 Every document hides<br />monsters inside.
               </p>
             </div>
-            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="application/pdf,image/*" className="hidden" />
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="application/pdf,image/*,.docx,.pptx,.doc,.ppt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation" className="hidden" />
           </motion.div>
 
           {/* URL Card (Front) */}
