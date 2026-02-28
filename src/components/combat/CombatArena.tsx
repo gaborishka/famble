@@ -8,6 +8,29 @@ import { getNextIntent } from '../../engine/enemyAI';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameImage } from '../GameImage';
 
+const playerVariants = {
+  idle: { x: 0, scale: 1, filter: 'brightness(1)' },
+  attack: { x: [0, 60, -10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
+  hit: { x: [0, -15, 15, -15, 15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
+  buff: { filter: ['brightness(1)', 'brightness(1.5) drop-shadow(0 0 15px #3b82f6)', 'brightness(1)'], scale: [1, 1.05, 1], transition: { duration: 0.5 } }
+};
+
+const enemyVariants = {
+  idle: { x: 0, scale: 1, filter: 'brightness(1)' },
+  attack: { x: [0, -60, 10, 0], scale: [1, 1.1, 1, 1], filter: 'brightness(1.2)', transition: { duration: 0.4 } },
+  hit: { x: [0, 15, -15, 15, -15, 0], filter: ['brightness(1)', 'brightness(2) drop-shadow(0 0 10px red)', 'brightness(1)'], transition: { duration: 0.4 } },
+  buff: { filter: ['brightness(1)', 'brightness(1.5)', 'brightness(1)'], transition: { duration: 0.5 } }
+};
+
+interface FloatingText {
+  id: number;
+  text: string;
+  type: 'damage' | 'block' | 'buff' | 'synergy';
+  target: 'player' | 'enemy';
+  xOffset: number;
+  yOffset: number;
+}
+
 interface CombatArenaProps {
   runData: RunData;
   deck: Card[];
@@ -23,6 +46,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
   const [activeSynergies, setActiveSynergies] = useState<string[]>([]);
   const [isGameOver, setIsGameOver] = useState(false);
   const [isVictory, setIsVictory] = useState(false);
+  const [playerAnim, setPlayerAnim] = useState<string>('idle');
+  const [enemyAnim, setEnemyAnim] = useState<string>('idle');
+  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
 
   useEffect(() => {
     const state = initializeCombat(deck, enemy);
@@ -37,6 +63,30 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
   const handlePlayCard = (card: Card) => {
     if (card.cost > gameState.energy || isGameOver || isVictory) return;
+
+    // Trigger animation based on card type
+    if (card.type === 'Attack') {
+      setPlayerAnim('attack');
+      setTimeout(() => setPlayerAnim('idle'), 400);
+
+      setTimeout(() => {
+        setEnemyAnim('hit');
+        setTimeout(() => setEnemyAnim('idle'), 400);
+      }, 200);
+    } else {
+      setPlayerAnim('buff');
+      setTimeout(() => setPlayerAnim('idle'), 500);
+    }
+
+    // Floating text
+    const newTexts: FloatingText[] = [];
+    if (card.damage) {
+      newTexts.push({ id: Date.now(), text: `-${card.damage}`, type: 'damage', target: 'enemy', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
+    }
+    if (card.block) {
+      newTexts.push({ id: Date.now() + 1, text: `+${card.block}`, type: 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
+    }
+
     let newState = resolveCard(card, gameState);
 
     // Check synergies
@@ -46,20 +96,38 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
       setTimeout(() => setActiveSynergies([]), 2000);
 
       // Apply synergy effects
-      triggered.forEach(synergy => {
+      triggered.forEach((synergy, index) => {
+        let text = '';
         if (synergy.effect === 'Damage' && newState.currentEnemy) {
           newState.currentEnemy.currentHp = Math.max(0, newState.currentEnemy.currentHp - synergy.value);
+          text = `-${synergy.value} (Synergy)`;
+          newTexts.push({ id: Date.now() + 10 + index, text, type: 'damage', target: 'enemy', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
         } else if (synergy.effect === 'Block') {
           newState.statusEffects['Block'] = (newState.statusEffects['Block'] || 0) + synergy.value;
+          text = `+${synergy.value} Block (Synergy)`;
+          newTexts.push({ id: Date.now() + 10 + index, text, type: 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
         } else if (synergy.effect === 'Energy') {
           newState.energy += synergy.value;
+          text = `+${synergy.value} Energy (Synergy)`;
+          newTexts.push({ id: Date.now() + 10 + index, text, type: 'buff', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 });
         }
       });
+
+      // Flash player for synergy
+      setPlayerAnim('buff');
+      setTimeout(() => setPlayerAnim('idle'), 500);
+    }
+
+    if (newTexts.length > 0) {
+      setFloatingTexts(prev => [...prev, ...newTexts]);
+      setTimeout(() => {
+        setFloatingTexts(prev => prev.filter(t => !newTexts.find(n => n.id === t.id)));
+      }, 1500);
     }
 
     // Check enemy death
     if (newState.currentEnemy && newState.currentEnemy.currentHp <= 0) {
-      setIsVictory(true);
+      setTimeout(() => setIsVictory(true), 500);
       setGameState(newState);
     } else {
       setGameState(newState);
@@ -68,11 +136,49 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
 
   const handleEndTurn = () => {
     if (isGameOver || isVictory) return;
-    const newState = endTurn(gameState);
-    if (newState.playerHp <= 0) {
-      setIsGameOver(true);
+
+    const intent = getNextIntent(gameState.currentEnemy!, gameState.turn);
+    if (intent && intent.type === 'Attack') {
+      setEnemyAnim('attack');
+      setTimeout(() => setEnemyAnim('idle'), 400);
+
+      setTimeout(() => {
+        setPlayerAnim('hit');
+        setTimeout(() => setPlayerAnim('idle'), 400);
+
+        // Show floating text
+        let dmg = intent.value;
+        if (gameState.statusEffects['Vulnerable']) dmg = Math.floor(dmg * 1.5);
+
+        let actualDmg = dmg;
+        let pBlock = gameState.statusEffects['Block'] || 0;
+        if (pBlock >= dmg) {
+          actualDmg = 0;
+        } else {
+          actualDmg -= pBlock;
+        }
+
+        if (dmg > 0) {
+          const newText: FloatingText = { id: Date.now(), text: actualDmg > 0 ? `-${actualDmg}` : 'Blocked!', type: actualDmg > 0 ? 'damage' : 'block', target: 'player', xOffset: Math.random() * 40 - 20, yOffset: Math.random() * 40 - 20 };
+          setFloatingTexts(prev => [...prev, newText]);
+          setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.id !== newText.id)), 1500);
+        }
+      }, 200);
+
+      setTimeout(() => {
+        const newState = endTurn(gameState);
+        if (newState.playerHp <= 0) setIsGameOver(true);
+        setGameState(newState);
+      }, 400);
+    } else {
+      setEnemyAnim('buff');
+      setTimeout(() => setEnemyAnim('idle'), 400);
+      setTimeout(() => {
+        const newState = endTurn(gameState);
+        if (newState.playerHp <= 0) setIsGameOver(true);
+        setGameState(newState);
+      }, 400);
     }
-    setGameState(newState);
   };
 
   const currentEnemyState = gameState.currentEnemy;
@@ -193,10 +299,29 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           {/* Ground Shadow */}
           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
-            key={`player-${gameState.playerHp}`}
+            variants={playerVariants}
+            initial="idle"
+            animate={playerAnim}
             className="w-full h-80 flex items-center justify-center relative z-10"
           >
             <GameImage prompt={`A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${runData.theme} theme`} className="w-full h-full object-contain scale-[1.35] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none" alt="Player" type="character" />
+
+            {/* Player Floating Texts */}
+            <AnimatePresence>
+              {floatingTexts.filter(t => t.target === 'player').map(text => (
+                <motion.div
+                  key={text.id}
+                  initial={{ opacity: 0, y: 0, x: text.xOffset, scale: 0.5 }}
+                  animate={{ opacity: 1, y: -100 - text.yOffset, scale: 1.2 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ duration: 1.5, ease: "easeOut" }}
+                  className={`absolute top-1/2 left-1/2 -translate-x-1/2 font-bold text-4xl drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] z-50 pointer-events-none ${text.type === 'damage' ? 'text-red-500' : text.type === 'block' ? 'text-blue-400' : 'text-green-400'
+                    }`}
+                >
+                  {text.text}
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </motion.div>
         </div>
 
@@ -242,7 +367,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
           {/* Ground Shadow */}
           <div className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-40 h-8 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0" />
           <motion.div
-            key={`enemy-${enemy.id}-${gameState.currentEnemy.currentHp}`}
+            variants={enemyVariants}
+            initial="idle"
+            animate={enemyAnim}
             className="w-72 h-80 flex items-center justify-center relative z-10"
           >
             {gameState.currentEnemy.imagePrompt ? (
@@ -250,6 +377,23 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemy, 
             ) : (
               <span className="text-8xl z-10 drop-shadow-lg">{(enemy as Boss).enrageThreshold ? '👑' : '👹'}</span>
             )}
+
+            {/* Enemy Floating Texts */}
+            <AnimatePresence>
+              {floatingTexts.filter(t => t.target === 'enemy').map(text => (
+                <motion.div
+                  key={text.id}
+                  initial={{ opacity: 0, y: 0, x: text.xOffset, scale: 0.5 }}
+                  animate={{ opacity: 1, y: -100 - text.yOffset, scale: 1.2 }}
+                  exit={{ opacity: 0, scale: 0.8 }}
+                  transition={{ duration: 1.5, ease: "easeOut" }}
+                  className={`absolute top-1/2 left-1/2 -translate-x-1/2 font-bold text-4xl drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)] z-50 pointer-events-none ${text.type === 'damage' ? 'text-red-500' : text.type === 'block' ? 'text-blue-400' : 'text-green-400'
+                    }`}
+                >
+                  {text.text}
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </motion.div>
         </div>
       </div>
