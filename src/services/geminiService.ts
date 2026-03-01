@@ -21,6 +21,7 @@ import {
   ShopRoomContent,
   CombatRoomContent,
 } from '../../shared/types/game';
+import { inferEnemyIsFlying } from '../../shared/utils/enemy';
 import { removeBackground } from '@imgly/background-removal';
 import { generateFallbackNodeMap } from '../engine/mapGenerator';
 
@@ -33,7 +34,6 @@ let currentRunId = '';
 const GLOBAL_ROOM_ID = 'global';
 export const PLAYER_PORTRAIT_PROMPT = 'A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up';
 const BATTLE_STAGE_FLOOR_PROMPT_RULE = 'Include one continuous, straight, horizontal battle platform at a fixed height across the full image width, around the lower third. This platform is the ground line where both player and ground enemies stand. Keep this ground level consistent across all rooms. Do not tilt, curve, split, or break the platform near the combat area. The region below the platform must stay visually readable with floor continuation, texture, reflections, or environment detail. Never render the lower area as a pure black strip, empty void, or heavy blackout gradient.';
-const FLYING_ENEMY_KEYWORDS = /\b(flying|fly|airborne|winged|hover|hovering|levitating|levitation|floating|drone|jetpack|wisp|specter|ghost|bat|harpy|griffin)\b/i;
 
 export function getCurrentRunId(): string {
   return currentRunId;
@@ -60,15 +60,15 @@ function buildObjectFileKey(objectId: string): string {
 }
 
 export function buildPlayerSpritePrompt(theme: string): string {
-  return `A character sprite of a heroic protagonist, facing right, looking right, side profile, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${theme} theme`;
+  return `A character sprite of a heroic protagonist, facing right, looking right, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${theme} theme`;
 }
 
 export function buildEnemySpritePrompt(enemyPrompt: string): string {
-  return `A character sprite of ${enemyPrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
+  return `A character sprite of ${enemyPrompt}, facing left, looking left, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
 }
 
 export function buildBossSpritePrompt(bossPrompt: string): string {
-  return `A character sprite of ${bossPrompt}, facing left, looking left, side profile, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as the player character, huge scale, 2D vector art`;
+  return `A character sprite of ${bossPrompt}, facing left, looking left, side profile, feet or base touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as a normal character, huge imposing scale, 2D vector art`;
 }
 
 function normalizeBattleBackgroundPrompt(prompt: string | undefined, theme: string): string {
@@ -78,13 +78,6 @@ function normalizeBattleBackgroundPrompt(prompt: string | undefined, theme: stri
     return basePrompt;
   }
   return `${basePrompt}. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}`;
-}
-
-function inferFlyingEnemyFromText(enemy: Partial<Enemy> | undefined): boolean {
-  if (!enemy) return false;
-  if (typeof enemy.isFlying === 'boolean') return enemy.isFlying;
-  const source = `${enemy.name || ''} ${enemy.description || ''} ${enemy.imagePrompt || ''}`;
-  return FLYING_ENEMY_KEYWORDS.test(source);
 }
 
 function createManifestEntry(params: {
@@ -413,6 +406,17 @@ Return the data strictly matching the provided JSON schema.`,
 const imageCache = new Map<string, string>();
 const pendingRequests = new Map<string, Promise<string>>();
 
+/** Synchronous cache lookup — returns the cached URL if available, else null. */
+export function getCachedImageUrl(
+  prompt?: string,
+  type: 'asset' | 'background' | 'character' = 'asset',
+  fileKey?: string
+): string | null {
+  if (!prompt && !fileKey) return null;
+  const cacheKey = `${type}:${fileKey || prompt}`;
+  return imageCache.get(cacheKey) ?? null;
+}
+
 function buildImageFileName(type: 'asset' | 'background' | 'character', prompt: string, fileKey?: string): string {
   if (fileKey) return `${type}_${toFileSafeKey(fileKey)}.png`;
   const sanitizedPrompt = toFileSafeKey(prompt);
@@ -453,7 +457,7 @@ export async function generateGameImage(
   if (type === 'background') {
     prefix = `A 2D video game combat stage background, side-scrolling perspective, clean lines, flat colors, highly detailed. ${BATTLE_STAGE_FLOOR_PROMPT_RULE} `;
   } else if (type === 'character') {
-    prefix = "A 2D video game character sprite, clean lines, flat colors, solid green screen background (#00FF00), highly detailed, isolated. ";
+    prefix = "A 2D video game character sprite, clean lines, flat colors, solid green screen background (#00FF00), highly detailed, isolated. The character's feet or base must touch the very bottom edge of the image. Full body visible from head to toe. ";
   }
 
   const request = ai.models.generateContent({
@@ -464,6 +468,12 @@ export async function generateGameImage(
           text: `${prefix}${prompt}`,
         },
       ],
+    },
+    config: {
+      responseModalities: ['IMAGE'],
+      imageConfig: {
+        aspectRatio: type === 'background' ? '16:9' : undefined,
+      },
     },
   }).then(async response => {
     for (const part of response.candidates?.[0]?.content?.parts || []) {
@@ -806,7 +816,7 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElit
   const rawHp = Math.max(1, Number(enemy.maxHp) || fallback.maxHp);
   const cappedHp = Math.min(rawHp, maxHpCap);
   const intents = Array.isArray(enemy.intents) && enemy.intents.length > 0 ? enemy.intents : fallback.intents;
-  const isFlying = inferFlyingEnemyFromText(enemy);
+  const isFlying = inferEnemyIsFlying(enemy);
 
   return {
     ...fallback,
@@ -886,8 +896,14 @@ function registerCardObjects(
   card: Card,
   slot: string
 ): Card {
-  const imageObjectId = card.imageObjectId || buildObjectId(roomId, 'image', `${slot}_card_${card.id}`);
-  const audioObjectId = card.audioObjectId || buildObjectId(roomId, 'audio', `${slot}_card_${card.id}_sfx`);
+  const canReuseImageObjectId = typeof card.imageObjectId === 'string' && card.imageObjectId.startsWith(`${roomId}:image:`);
+  const canReuseAudioObjectId = typeof card.audioObjectId === 'string' && card.audioObjectId.startsWith(`${roomId}:audio:`);
+  const imageObjectId = canReuseImageObjectId
+    ? card.imageObjectId!
+    : buildObjectId(roomId, 'image', `${slot}_card_${card.id}`);
+  const audioObjectId = canReuseAudioObjectId
+    ? card.audioObjectId!
+    : buildObjectId(roomId, 'audio', `${slot}_card_${card.id}_sfx`);
   if (card.imagePrompt) {
     ensureManifestEntry(runData.objectManifest, {
       id: imageObjectId,
@@ -921,8 +937,14 @@ function registerEnemyObjects(
   enemy: Enemy,
   slot: string
 ): Enemy {
-  const imageObjectId = enemy.imageObjectId || buildObjectId(roomId, 'image', `${slot}_enemy_${enemy.id}`);
-  const audioObjectId = enemy.audioObjectId || buildObjectId(roomId, 'audio', `${slot}_enemy_${enemy.id}_sfx`);
+  const canReuseImageObjectId = typeof enemy.imageObjectId === 'string' && enemy.imageObjectId.startsWith(`${roomId}:image:`);
+  const canReuseAudioObjectId = typeof enemy.audioObjectId === 'string' && enemy.audioObjectId.startsWith(`${roomId}:audio:`);
+  const imageObjectId = canReuseImageObjectId
+    ? enemy.imageObjectId!
+    : buildObjectId(roomId, 'image', `${slot}_enemy_${enemy.id}`);
+  const audioObjectId = canReuseAudioObjectId
+    ? enemy.audioObjectId!
+    : buildObjectId(roomId, 'audio', `${slot}_enemy_${enemy.id}_sfx`);
   if (enemy.imagePrompt) {
     ensureManifestEntry(runData.objectManifest, {
       id: imageObjectId,
@@ -955,9 +977,18 @@ function registerBossObjects(
   roomId: string,
   boss: Boss
 ): Boss {
-  const imageObjectId = boss.imageObjectId || buildObjectId(roomId, 'image', `boss_${boss.id}`);
-  const audioObjectId = boss.audioObjectId || buildObjectId(roomId, 'audio', `boss_${boss.id}_sfx`);
-  const narratorAudioObjectId = boss.narratorAudioObjectId || buildObjectId(roomId, 'audio', `boss_${boss.id}_tts`);
+  const canReuseImageObjectId = typeof boss.imageObjectId === 'string' && boss.imageObjectId.startsWith(`${roomId}:image:`);
+  const canReuseAudioObjectId = typeof boss.audioObjectId === 'string' && boss.audioObjectId.startsWith(`${roomId}:audio:`);
+  const canReuseNarratorAudioObjectId = typeof boss.narratorAudioObjectId === 'string' && boss.narratorAudioObjectId.startsWith(`${roomId}:audio:`);
+  const imageObjectId = canReuseImageObjectId
+    ? boss.imageObjectId!
+    : buildObjectId(roomId, 'image', `boss_${boss.id}`);
+  const audioObjectId = canReuseAudioObjectId
+    ? boss.audioObjectId!
+    : buildObjectId(roomId, 'audio', `boss_${boss.id}_sfx`);
+  const narratorAudioObjectId = canReuseNarratorAudioObjectId
+    ? boss.narratorAudioObjectId!
+    : buildObjectId(roomId, 'audio', `boss_${boss.id}_tts`);
   if (boss.imagePrompt) {
     ensureManifestEntry(runData.objectManifest, {
       id: imageObjectId,
@@ -994,6 +1025,47 @@ function registerBossObjects(
     audioObjectId,
     narratorAudioObjectId,
   };
+}
+
+function ensureSharedPlayerImageRefs(
+  objectManifest: Record<string, GeneratedObjectManifestEntry>,
+  theme: string,
+): { playerPortraitImageId: string; playerSpriteImageId: string } {
+  const playerSpritePrompt = buildPlayerSpritePrompt(theme);
+  const entries = Object.values(objectManifest);
+
+  const playerPortraitImageId =
+    entries.find(entry =>
+      entry.kind === 'image'
+      && entry.imageType === 'character'
+      && entry.prompt === PLAYER_PORTRAIT_PROMPT
+    )?.id || buildObjectId(GLOBAL_ROOM_ID, 'image', 'player_portrait');
+
+  const playerSpriteImageId =
+    entries.find(entry =>
+      entry.kind === 'image'
+      && entry.imageType === 'character'
+      && entry.prompt === playerSpritePrompt
+    )?.id || buildObjectId(GLOBAL_ROOM_ID, 'image', 'player_sprite');
+
+  ensureManifestEntry(objectManifest, {
+    id: playerPortraitImageId,
+    roomId: GLOBAL_ROOM_ID,
+    kind: 'image',
+    prompt: PLAYER_PORTRAIT_PROMPT,
+    imageType: 'character',
+    fileKey: buildObjectFileKey(playerPortraitImageId),
+  });
+  ensureManifestEntry(objectManifest, {
+    id: playerSpriteImageId,
+    roomId: GLOBAL_ROOM_ID,
+    kind: 'image',
+    prompt: playerSpritePrompt,
+    imageType: 'character',
+    fileKey: buildObjectFileKey(playerSpriteImageId),
+  });
+
+  return { playerPortraitImageId, playerSpriteImageId };
 }
 
 export async function generateRunBootstrap(
@@ -1107,28 +1179,9 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
   const firstCombatNode = getFirstCombatNode(node_map);
   const firstRoomId = firstCombatNode?.id || 'room_start';
   const objectManifest: Record<string, GeneratedObjectManifestEntry> = {};
-
-  const playerPortraitImageId = buildObjectId(firstRoomId, 'image', 'player_portrait');
-  const playerSpriteImageId = buildObjectId(firstRoomId, 'image', 'player_sprite');
+  const { playerPortraitImageId, playerSpriteImageId } = ensureSharedPlayerImageRefs(objectManifest, theme);
   const firstRoomBackgroundImageId = buildObjectId(firstRoomId, 'image', 'background');
   const firstRoomMusicId = buildObjectId(firstRoomId, 'audio', 'room_music');
-
-  ensureManifestEntry(objectManifest, {
-    id: playerPortraitImageId,
-    roomId: GLOBAL_ROOM_ID,
-    kind: 'image',
-    prompt: PLAYER_PORTRAIT_PROMPT,
-    imageType: 'character',
-    fileKey: buildObjectFileKey(playerPortraitImageId),
-  });
-  ensureManifestEntry(objectManifest, {
-    id: playerSpriteImageId,
-    roomId: GLOBAL_ROOM_ID,
-    kind: 'image',
-    prompt: buildPlayerSpritePrompt(theme),
-    imageType: 'character',
-    fileKey: buildObjectFileKey(playerSpriteImageId),
-  });
   ensureManifestEntry(objectManifest, {
     id: firstRoomBackgroundImageId,
     roomId: firstRoomId,
@@ -1308,6 +1361,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const enemiesWithObjects = allEnemies.map((e, idx) => registerEnemyObjects(manifestScope, node.id, e, `${node.type.toLowerCase()}_${idx}`));
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
+    const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
 
     ensureManifestEntry(runData.objectManifest, {
       id: backgroundImageId,
@@ -1337,6 +1391,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       backgroundPrompt,
       roomMusicPrompt,
       objectRefs: {
+        ...sharedPlayerImageRefs,
         backgroundImageId,
         enemySpriteImageIds: enemiesWithObjects.map(e => e.imageObjectId).filter(Boolean) as string[],
         cardImageIds: effectiveRewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
@@ -1376,6 +1431,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     );
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
+    const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
     ensureManifestEntry(runData.objectManifest, {
       id: backgroundImageId,
       roomId: node.id,
@@ -1403,6 +1459,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       backgroundPrompt,
       roomMusicPrompt: runData.roomMusicPrompt,
       objectRefs: {
+        ...sharedPlayerImageRefs,
         backgroundImageId,
         enemySpriteImageIds: [enemyWithObjects.imageObjectId].filter(Boolean) as string[],
         cardImageIds: rewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
@@ -1462,6 +1519,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const bossMusicPrompt = parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
+    const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
     ensureManifestEntry(runData.objectManifest, {
       id: backgroundImageId,
       roomId: node.id,
@@ -1486,6 +1544,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       backgroundPrompt,
       bossMusicPrompt,
       objectRefs: {
+        ...sharedPlayerImageRefs,
         backgroundImageId,
         bossSpriteImageId: boss.imageObjectId,
         bossMusicId,
@@ -1501,6 +1560,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const bossMusicPrompt = runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
+    const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
     ensureManifestEntry(runData.objectManifest, {
       id: backgroundImageId,
       roomId: node.id,
@@ -1525,6 +1585,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       backgroundPrompt,
       bossMusicPrompt,
       objectRefs: {
+        ...sharedPlayerImageRefs,
         backgroundImageId,
         bossSpriteImageId: boss.imageObjectId,
         bossMusicId,

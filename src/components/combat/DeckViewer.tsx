@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Card } from '../../../shared/types/game';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { CardComponent } from './CardComponent';
 
 const TAG_COLORS = [
@@ -27,10 +27,6 @@ interface DeckViewerProps {
 export const DeckViewer: React.FC<DeckViewerProps> = ({ cards, title, onClose }) => {
   const [filterType, setFilterType] = useState<FilterType>('All');
   const [sortBy, setSortBy] = useState<SortType>('cost');
-  const [hoveredCardIndex, setHoveredCardIndex] = useState<number | null>(null);
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
-  const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-
   // Escape key to close
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
@@ -88,21 +84,6 @@ export const DeckViewer: React.FC<DeckViewerProps> = ({ cards, title, onClose })
     return colorMap;
   }, [tagDistribution]);
 
-  const handleCardHover = useCallback((index: number) => {
-    setHoveredCardIndex(index);
-    const el = cardRefs.current.get(index);
-    if (el) {
-      const rect = el.getBoundingClientRect();
-      const viewportW = window.innerWidth;
-      // Position tooltip to the right if space, else left
-      const x = rect.right + 220 < viewportW
-        ? rect.right + 16
-        : rect.left - 210;
-      const y = Math.max(20, Math.min(rect.top + rect.height / 2 - 144, window.innerHeight - 310));
-      setTooltipPos({ x, y });
-    }
-  }, []);
-
   const filterTabs: { type: FilterType; label: string; activeBg: string; inactiveBg: string; activeBorder: string; inactiveBorder: string }[] = [
     { type: 'All', label: 'All', activeBg: 'bg-slate-600', inactiveBg: 'bg-transparent hover:bg-slate-800', activeBorder: 'border-slate-400', inactiveBorder: 'border-slate-600' },
     { type: 'Attack', label: 'Attack', activeBg: 'bg-red-900/70', inactiveBg: 'bg-transparent hover:bg-red-900/30', activeBorder: 'border-red-500', inactiveBorder: 'border-red-800/60' },
@@ -123,7 +104,7 @@ export const DeckViewer: React.FC<DeckViewerProps> = ({ cards, title, onClose })
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.9, opacity: 0 }}
         transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-        className="bg-slate-900/95 backdrop-blur-sm border border-slate-700 rounded-2xl max-w-[80rem] w-full max-h-[90vh] flex flex-col overflow-hidden"
+        className="bg-slate-900/95 backdrop-blur-sm border border-slate-700 rounded-2xl max-w-[80rem] w-full max-h-[95vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -190,16 +171,10 @@ export const DeckViewer: React.FC<DeckViewerProps> = ({ cards, title, onClose })
                   initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(idx * 0.02, 0.5) }}
-                  ref={(el) => {
-                    if (el) cardRefs.current.set(idx, el);
-                    else cardRefs.current.delete(idx);
-                  }}
-                  className="cursor-default hover:z-10 overflow-visible"
-                  style={{ width: '134px', height: '200px' }}
-                  onMouseEnter={() => handleCardHover(idx)}
-                  onMouseLeave={() => setHoveredCardIndex(null)}
+                  className="cursor-default hover:z-10 overflow-visible transition-transform duration-150 hover:scale-110"
+                  style={{ width: '154px', height: '230px' }}
                 >
-                  <div className="origin-top-left" style={{ transform: 'scale(0.7)' }}>
+                  <div className="origin-top-left" style={{ transform: 'scale(0.8)' }}>
                     <CardComponent card={card} />
                   </div>
                 </motion.div>
@@ -227,21 +202,6 @@ export const DeckViewer: React.FC<DeckViewerProps> = ({ cards, title, onClose })
         </div>
       </motion.div>
 
-      {/* Hover Tooltip — enlarged card */}
-      <AnimatePresence>
-        {hoveredCardIndex !== null && tooltipPos && displayCards[hoveredCardIndex] && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ duration: 0.15 }}
-            className="fixed z-[110] pointer-events-none"
-            style={{ left: tooltipPos.x, top: tooltipPos.y }}
-          >
-            <CardComponent card={displayCards[hoveredCardIndex]} />
-          </motion.div>
-        )}
-      </AnimatePresence>
     </motion.div>
   );
 };

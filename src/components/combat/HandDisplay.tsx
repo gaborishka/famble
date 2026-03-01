@@ -1,4 +1,5 @@
 import React, { useState, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Card } from '../../../shared/types/game';
 import { CardComponent } from './CardComponent';
 import { motion, AnimatePresence } from 'motion/react';
@@ -36,7 +37,6 @@ const TargetingArrow: React.FC<{
   const dist = Math.sqrt(dx * dx + dy * dy);
   if (dist < 40) return null;
 
-  /* control-point: always arcs upward from the midpoint */
   const mx = (sx + ex) / 2;
   const my = (sy + ey) / 2;
   const arc = Math.min(dist * 0.35, 180);
@@ -47,7 +47,6 @@ const TargetingArrow: React.FC<{
 
   return (
     <g>
-      {/* Soft glow behind the curve */}
       <path
         d={`M ${sx} ${sy} Q ${cx} ${cy} ${ex} ${ey}`}
         fill="none"
@@ -57,7 +56,6 @@ const TargetingArrow: React.FC<{
         strokeLinecap="round"
       />
 
-      {/* Chevron segments */}
       {Array.from({ length: n }, (_, i) => {
         const t = (i + 1) / (n + 1);
         const px = qBez(t, sx, cx, ex);
@@ -79,7 +77,6 @@ const TargetingArrow: React.FC<{
         );
       })}
 
-      {/* Large arrowhead at the tip */}
       {(() => {
         const t = 0.97;
         const ax = qBez(t, sx, cx, ex);
@@ -119,7 +116,6 @@ function getTargetCenter(cardType: string, targetEnemyIndex?: number): { x: numb
   return { x: r.left + r.width / 2, y: r.top + r.height * 0.45 };
 }
 
-/** Find the enemy DOM element closest to a viewport point from allowed targets only. */
 function findNearestEnemy(px: number, py: number, indexes: number[]): number {
   let bestIdx = indexes[0] ?? 0;
   let bestDist = Infinity;
@@ -137,12 +133,17 @@ function findNearestEnemy(px: number, py: number, indexes: number[]): number {
   return bestIdx;
 }
 
+/* ─── Card layout constants ────────────────────────────────── */
+
+const CARD_SPACING = 120;
+const CARD_HALF_WIDTH = 112; // half of 224px card width (w-56)
+
 /* ─── Hand display ───────────────────────────────────────────── */
 
 export const HandDisplay: React.FC<HandDisplayProps> = ({
   hand, energy, onPlayCard, onDragPlayCard, targetEnemyIndex, multipleEnemies, attackTargetEnemyIndexes = [],
 }) => {
-  const [hoveredCard, setHoveredCard] = useState<string | null>(null);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [draggingCard, setDraggingCard] = useState<string | null>(null);
   const [dragArrow, setDragArrow] = useState<{
     sx: number; sy: number;
@@ -150,6 +151,7 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
     cardType: string;
   } | null>(null);
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const cardElMap = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const dragTargetRef = useRef<number>(0);
 
@@ -162,7 +164,59 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
     ? attackTargetEnemyIndexes
     : [targetEnemyIndex ?? 0];
 
-  /** Update arrow start (card) + end (nearest enemy or player) during drag. */
+  /**
+   * Zone-based hover: determine which card the cursor is closest to by X position.
+   * This ignores which card element the cursor is visually over (which can be wrong
+   * when a hovered card scales up and covers neighbors). Instead it divides the hand
+   * into logical zones based on card center positions.
+   */
+  const resolveHoveredIndex = useCallback((clientX: number, clientY: number): number | null => {
+    const container = containerRef.current;
+    if (!container || hand.length === 0) return null;
+    const rect = container.getBoundingClientRect();
+
+    // Only detect hover in the card area
+    if (clientY < rect.top + rect.height * 0.1 || clientY > rect.bottom + 30) return null;
+    if (clientX < rect.left - 30 || clientX > rect.right + 30) return null;
+
+    const centerX = rect.left + rect.width / 2;
+    // Calculate visual scale: the hand container sits inside a parent with transform: scale()
+    const visualScale = rect.width / (container.offsetWidth || 1);
+    const spacing = CARD_SPACING * visualScale;
+    const halfCard = CARD_HALF_WIDTH * visualScale;
+
+    const n = hand.length;
+    const middle = (n - 1) / 2;
+
+    let bestIdx: number | null = null;
+    let bestDist = Infinity;
+
+    for (let i = 0; i < n; i++) {
+      const offset = i - middle;
+      const cardCenterX = centerX + offset * spacing;
+      const dist = Math.abs(clientX - cardCenterX);
+      if (dist < halfCard + 10 && dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+      }
+    }
+
+    return bestIdx;
+  }, [hand.length]);
+
+  /** Called from onPointerMove on each card — event may fire on ANY card due to overlap/z-index. */
+  const handleCardPointerMove = useCallback((e: React.PointerEvent) => {
+    if (draggingCard) return;
+    const idx = resolveHoveredIndex(e.clientX, e.clientY);
+    setHoveredIndex(prev => prev === idx ? prev : idx);
+  }, [draggingCard, resolveHoveredIndex]);
+
+  const handleCardPointerLeave = useCallback(() => {
+    if (!draggingCard) {
+      setHoveredIndex(null);
+    }
+  }, [draggingCard]);
+
   const updateArrowDuringDrag = useCallback((uniqueId: string, cardType: string) => {
     const el = cardElMap.current.get(uniqueId);
     if (!el) return;
@@ -171,7 +225,6 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
     const sy = r.top;
 
     if (cardType === 'Attack' && multipleEnemies && effectiveAttackTargetIndexes.length > 1) {
-      // Arrow tip follows the nearest enemy to the card's current position
       const nearestIdx = findNearestEnemy(sx, sy, effectiveAttackTargetIndexes);
       dragTargetRef.current = nearestIdx;
       const target = getEnemyCenter(nearestIdx);
@@ -194,11 +247,11 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
 
   return (
     <>
-      {/* Fixed viewport SVG for the targeting arrow */}
-      {dragArrow && (
+      {/* Targeting arrow – portalled to body to escape scaled parents */}
+      {dragArrow && createPortal(
         <svg
           className="fixed inset-0 pointer-events-none"
-          style={{ width: '100vw', height: '100vh', zIndex: 100 }}
+          style={{ width: '100vw', height: '100vh', zIndex: 9999 }}
         >
           <TargetingArrow
             sx={dragArrow.sx}
@@ -207,10 +260,14 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
             ey={dragArrow.ey}
             color={arrowColor}
           />
-        </svg>
+        </svg>,
+        document.body
       )}
 
-      <div className="flex justify-center items-end h-72 relative w-full max-w-5xl mx-auto pointer-events-none">
+      <div
+        ref={containerRef}
+        className="flex justify-center items-end h-[22rem] relative w-full max-w-6xl mx-auto pointer-events-none"
+      >
         <AnimatePresence>
           {hand.map((card, index) => {
             const uniqueId = `${card.id}-${index}`;
@@ -220,13 +277,12 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
             const rotation = offset * 6;
             const yOffset = Math.abs(offset) * 10 + Math.pow(offset, 2) * 8;
 
-            const isHovered = hoveredCard === uniqueId;
+            const isHovered = hoveredIndex === index && !draggingCard;
             const isDragging = draggingCard === uniqueId;
             const disabled = card.cost > energy;
 
             return (
               <motion.div
-                layoutId={uniqueId}
                 key={uniqueId}
                 ref={(el: HTMLDivElement | null) => { cardElMap.current.set(uniqueId, el); }}
                 initial={{ y: 200, opacity: 0, scale: 0.8 }}
@@ -234,17 +290,18 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
                   y: isDragging || isHovered ? yOffset - 40 : yOffset,
                   opacity: 1,
                   rotate: isDragging || isHovered ? 0 : rotation,
-                  scale: isDragging ? 1.05 : (isHovered ? 1.15 : 1)
+                  scale: isDragging ? 1.05 : (isHovered ? 1.15 : 1),
                 }}
                 exit={{ y: -300, opacity: 0, scale: 0.5, transition: { duration: 0.2 } }}
-                transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                className={`absolute origin-bottom ${disabled ? 'pointer-events-auto' : 'pointer-events-auto cursor-grab active:cursor-grabbing'}`}
+                transition={{ type: 'tween', duration: 0.15, ease: 'easeOut' }}
+                className={`absolute origin-bottom pointer-events-auto ${disabled ? '' : 'cursor-grab active:cursor-grabbing'}`}
                 style={{
-                  left: `calc(50% + ${offset * 105}px - 96px)`,
+                  left: `calc(50% + ${offset * CARD_SPACING}px - ${CARD_HALF_WIDTH}px)`,
                   zIndex: isDragging ? 200 : (isHovered ? 100 : index),
+                  willChange: 'transform',
                 }}
-                onHoverStart={() => !isDragging && setHoveredCard(uniqueId)}
-                onHoverEnd={() => setHoveredCard(null)}
+                onPointerMove={handleCardPointerMove}
+                onPointerLeave={handleCardPointerLeave}
                 drag={!disabled}
                 dragSnapToOrigin
                 dragElastic={0.1}
@@ -265,7 +322,7 @@ export const HandDisplay: React.FC<HandDisplayProps> = ({
                   }
                   dragTargetRef.current = targetEnemyIdx;
                   setDraggingCard(uniqueId);
-                  setHoveredCard(null);
+                  setHoveredIndex(null);
                 }}
                 onDrag={() => updateArrowDuringDrag(uniqueId, card.type)}
                 onDragEnd={(_e, info) => {

@@ -85,6 +85,15 @@ export interface GameState {
   statusEffects: Record<string, number>;
 }
 
+export interface CombatDefeatSummary {
+  damageDealt: number;
+  turns: number;
+  enemiesDefeated: number;
+  cardsPlayed: number;
+  killerName: string;
+  finalDeckCount: number;
+}
+
 export interface MapNode {
   id: string;
   type: 'Combat' | 'Event' | 'Shop' | 'Treasure' | 'Boss' | 'Elite' | 'Campfire';

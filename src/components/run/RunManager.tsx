@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
+  isRunDataV2,
+} from '../../../shared/types/game';
+import type {
   RunData,
   RunDataV2,
   MapNode,
@@ -10,10 +13,10 @@ import {
   RoomContentPayload,
   EventRoomContent,
   ShopRoomContent,
-  isRunDataV2,
+  CombatDefeatSummary,
 } from '../../../shared/types/game';
 import { NodeMap } from '../map/NodeMap';
-import { CombatArena, CombatVictorySummary, CombatDefeatSummary } from '../combat/CombatArena';
+import { CombatArena, CombatVictorySummary } from '../combat/CombatArena';
 import { CardReward } from '../rewards/CardReward';
 import { generateFallbackNodeMap } from '../../engine/mapGenerator';
 import { EventScreen, EventEffects } from './EventScreen';
@@ -23,8 +26,10 @@ import { PlayerHUD } from './PlayerHUD';
 import { GameImage } from '../GameImage';
 import { saveRunSnapshot, resolveManifestObjectUrl } from '../../services/geminiService';
 import { RoomGenerationOrchestrator } from '../../services/roomGenerationOrchestrator';
-import { DefeatScreen, DefeatStats } from './DefeatScreen';
-import { VictoryScreen, VictoryStats } from './VictoryScreen';
+import { DefeatScreen } from './DefeatScreen';
+import type { DefeatStats } from './DefeatScreen';
+import { VictoryScreen } from './VictoryScreen';
+import type { VictoryStats } from './VictoryScreen';
 
 interface RunManagerProps {
   runData: RunData;
@@ -95,6 +100,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     cardsPlayed: 0,
     turnsTaken: 0,
   });
+  const [activeRoomPayload, setActiveRoomPayload] = useState<RoomContentPayload | null>(null);
   const [roomGate, setRoomGate] = useState<{
     node: MapNode | null;
     status: 'loading' | 'failed';
@@ -116,6 +122,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   useEffect(() => {
     setActiveRunData(runData);
+    setActiveRoomPayload(null);
     if (isRunDataV2(runData)) {
       runDataRef.current = runData;
     } else {
@@ -157,7 +164,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     const orchestrator = new RoomGenerationOrchestrator({
       getRunData: () => runDataRef.current || runData,
       setRunData: (updater) => updateRunDataV2(updater),
-      maxConcurrent: 2,
+      maxConcurrent: 1,
     });
     orchestratorRef.current = orchestrator;
     return () => {
@@ -192,6 +199,31 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     return [...source]
       .sort(() => Math.random() - 0.5)
       .slice(0, Math.min(3, source.length));
+  };
+
+  const normalizeRewardDisplayCards = (cards: Card[]): Card[] => {
+    const seenImageIds = new Map<string, string | undefined>();
+    return cards.map(card => {
+      const imageObjectId = card.imageObjectId;
+      if (!imageObjectId) return card;
+
+      const priorPrompt = seenImageIds.get(imageObjectId);
+      if (priorPrompt === undefined) {
+        seenImageIds.set(imageObjectId, card.imagePrompt);
+        return card;
+      }
+
+      // Legacy guard: one payload may accidentally reuse the same object id for multiple different cards.
+      if (priorPrompt !== card.imagePrompt) {
+        return {
+          ...card,
+          imageObjectId: undefined,
+          imageUrl: undefined,
+        };
+      }
+
+      return card;
+    });
   };
 
   const clearRewardState = () => {
@@ -265,13 +297,15 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const handleNodeSelect = async (node: MapNode) => {
     const ensuredPayload = await ensureNodeReady(node);
     if (ensuredPayload === false) return;
+    const resolvedPayload = ensuredPayload || getRoomPayload(node.id) || null;
 
+    setActiveRoomPayload(resolvedPayload);
     setCurrentNodeId(node.id);
     switch (node.type) {
       case 'Combat':
       case 'Elite':
       case 'Boss':
-        setCurrentEnemies(resolveNodeEnemies(node, ensuredPayload || undefined));
+        setCurrentEnemies(resolveNodeEnemies(node, resolvedPayload || undefined));
         setView('combat');
         break;
       case 'Event':
@@ -308,6 +342,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   const returnToMap = () => {
     markNodeCompleted();
+    setActiveRoomPayload(null);
     setView('map');
   };
 
@@ -359,9 +394,9 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     } else {
       const nextGold = gold + 25;
       let nextRewardCards = getRandomRewardCards();
-      const payload = getRoomPayload(currentNodeId);
+      const payload = activeRoomPayload || getRoomPayload(currentNodeId);
       if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') && payload.rewardCards && payload.rewardCards.length > 0) {
-        nextRewardCards = payload.rewardCards.slice(0, 3);
+        nextRewardCards = normalizeRewardDisplayCards(payload.rewardCards.slice(0, 3));
       }
       const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
 
@@ -403,11 +438,13 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     };
     setDeck(prev => [...prev, rewardCard]);
     clearRewardState();
+    setActiveRoomPayload(null);
     setView('map');
   };
 
   const handleSkipReward = () => {
     clearRewardState();
+    setActiveRoomPayload(null);
     setView('map');
   };
 
@@ -476,13 +513,22 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   useEffect(() => {
     if (!isRunDataV2(activeRunData)) return;
+    if (view !== 'map') return;
     if (activeRunData.generationSettings.mode !== 'fast_start') return;
     if (!orchestratorRef.current) return;
     const depth = Math.max(1, activeRunData.generationSettings.prefetchDepth ?? 2);
     orchestratorRef.current.prefetchFrom(currentNodeId, nodes, depth);
-  }, [activeRunData, currentNodeId, nodes]);
+  }, [activeRunData, currentNodeId, nodes, view]);
 
-  const currentRoomPayload = getRoomPayload(currentNodeId);
+  useEffect(() => {
+    if (!currentNodeId) return;
+    const latestPayload = getRoomPayload(currentNodeId);
+    if (latestPayload) {
+      setActiveRoomPayload(latestPayload);
+    }
+  }, [currentNodeId, activeRunData, getRoomPayload]);
+
+  const currentRoomPayload = activeRoomPayload || getRoomPayload(currentNodeId);
   const currentEventPayload: EventRoomContent | null =
     currentRoomPayload && currentRoomPayload.nodeType === 'Event' ? currentRoomPayload : null;
   const currentShopPayload: ShopRoomContent | null =
@@ -559,7 +605,9 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    const cardsToShow = rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3);
+    const cardsToShow = normalizeRewardDisplayCards(
+      rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3)
+    );
     const statsToShow: RewardStats = rewardStats ?? {
       damageDealt: 0,
       turns: 1,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { generateGameImage } from '../services/geminiService';
+import { generateGameImage, getCachedImageUrl } from '../services/geminiService';
 import { Loader2 } from 'lucide-react';
 
 interface GameImageProps {
@@ -12,7 +12,7 @@ interface GameImageProps {
 }
 
 export const GameImage: React.FC<GameImageProps> = ({ src, prompt, fileKey, className = '', alt = 'Game Asset', type = 'asset' }) => {
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(() => src || getCachedImageUrl(prompt, type as 'asset' | 'background' | 'character', fileKey));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
 

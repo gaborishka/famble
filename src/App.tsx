@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { RunManager } from './components/run/RunManager';
 import { Generator } from './components/generator/Generator';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { RunData } from '../shared/types/game';
 
 export default function App() {
@@ -15,14 +16,16 @@ export default function App() {
     (window.location.pathname === '/loading-preview' || window.location.pathname === '/loading-preview/');
 
   return (
-    <div className="min-h-screen bg-slate-950">
-      {isLoadingPreviewRoute ? (
-        <Generator onGenerated={() => undefined} forceLoadingPreview />
-      ) : runData ? (
-        <RunManager runData={runData} onReset={() => setRunData(null)} />
-      ) : (
-        <Generator onGenerated={(data) => setRunData(data)} />
-      )}
-    </div>
+    <ErrorBoundary>
+      <div className="min-h-screen bg-slate-950">
+        {isLoadingPreviewRoute ? (
+          <Generator onGenerated={() => undefined} forceLoadingPreview />
+        ) : runData ? (
+          <RunManager runData={runData} onReset={() => setRunData(null)} />
+        ) : (
+          <Generator onGenerated={(data) => setRunData(data)} />
+        )}
+      </div>
+    </ErrorBoundary>
   );
 }

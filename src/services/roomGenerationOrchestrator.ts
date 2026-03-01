@@ -9,6 +9,7 @@ import {
 interface QueueTask {
   roomId: string;
   node: MapNode;
+  highPriority: boolean;
   resolve: (value: RoomContentPayload | null) => void;
 }
 
@@ -97,6 +98,7 @@ export class RoomGenerationOrchestrator {
       const task: QueueTask = {
         roomId: node.id,
         node,
+        highPriority,
         resolve,
       };
 
@@ -107,7 +109,9 @@ export class RoomGenerationOrchestrator {
       }
       this.queuedRoomIds.add(node.id);
 
-      this.updateRoomState(node.id, { status: 'queued', error: undefined });
+      if (highPriority) {
+        this.updateRoomState(node.id, { status: 'queued', error: undefined });
+      }
       this.pump();
     });
 
@@ -135,9 +139,11 @@ export class RoomGenerationOrchestrator {
   }
 
   private async runTask(task: QueueTask): Promise<void> {
-    const { roomId, node, resolve } = task;
+    const { roomId, node, highPriority, resolve } = task;
 
-    this.updateRoomState(roomId, { status: 'generating', error: undefined });
+    if (highPriority) {
+      this.updateRoomState(roomId, { status: 'generating', error: undefined });
+    }
 
     try {
       const workingRunData = this.getRunData();
@@ -152,10 +158,12 @@ export class RoomGenerationOrchestrator {
       this.setRunData(prev => applyRoomContentToRunData(prev, roomId, payload, manifestSnapshot));
       resolve(payload);
     } catch (err) {
-      this.updateRoomState(roomId, {
-        status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      });
+      if (highPriority) {
+        this.updateRoomState(roomId, {
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       resolve(null);
     } finally {
       this.pending.delete(roomId);

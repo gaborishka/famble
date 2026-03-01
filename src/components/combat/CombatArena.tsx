@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { GameState, Card, Enemy, Boss, RunData, Intent, RoomContentPayload } from '../../../shared/types/game';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { isRunDataV2 } from '../../../shared/types/game';
+import type { GameState, Card, Enemy, Boss, RunData, Intent, RoomContentPayload, CombatDefeatSummary } from '../../../shared/types/game';
 import { initializeCombat, endTurn } from '../../engine/combatEngine';
 import { resolveCard } from '../../engine/cardResolver';
 import { checkSynergies } from '../../engine/synergyEngine';
@@ -18,6 +19,7 @@ import {
   PLAYER_PORTRAIT_PROMPT,
   resolveManifestObjectUrl,
 } from '../../services/geminiService';
+import { inferEnemyIsFlying } from '../../../shared/utils/enemy';
 
 const ATTACK_INTENT_TYPES = new Set(['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff']);
 type EnemyAnimState = 'idle' | 'attack' | 'hit' | 'buff' | 'defend' | 'debuff' | 'unknown' | 'death';
@@ -25,7 +27,6 @@ const PRIMARY_ENEMY_ANIM_MS = 320;
 const SECONDARY_ENEMY_ANIM_MS = 260;
 const HEAVY_HIT_THRESHOLD = 15;
 const ENEMY_TURN_STAGGER_MS = 400;
-const FLYING_ENEMY_KEYWORDS = /\b(flying|fly|airborne|winged|hover|hovering|levitating|levitation|floating|drone|jetpack|wisp|specter|ghost|bat|harpy|griffin)\b/i;
 
 interface Particle {
   id: number;
@@ -130,15 +131,6 @@ export interface CombatVictorySummary {
   enemiesDefeated: number;
 }
 
-export interface CombatDefeatSummary {
-  damageDealt: number;
-  turns: number;
-  enemiesDefeated: number;
-  cardsPlayed: number;
-  killerName: string;
-  finalDeckCount: number;
-}
-
 interface CombatArenaProps {
   runData: RunData;
   deck: Card[];
@@ -197,9 +189,9 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     )
   );
   // User-requested parity: make 100% browser zoom look like previous 67% composition.
-  const sceneScale = baseSceneScale * 0.67;
+  const sceneScale = baseSceneScale * 0.85;
   // Compensation so sprites stay attached to the stage after responsive scaling.
-  const groundPlacementDropPx = Math.round((1 - sceneScale) * 120 + 20);
+  const groundPlacementDropPx = Math.round(viewportSize.height * 0.26 / sceneScale);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -374,6 +366,52 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     }
     prevPlayerHpRef.current = gameState.playerHp;
   }, [gameState?.enemies.map(e => e.currentHp).join(','), gameState?.playerHp]);
+
+  const sharedPlayerRefs = useMemo(() => {
+    if (!isRunDataV2(runData)) {
+      return {
+        playerPortraitImageId: undefined as string | undefined,
+        playerSpriteImageId: undefined as string | undefined,
+        playerPortraitImageUrl: undefined as string | undefined,
+        playerSpriteImageUrl: undefined as string | undefined,
+      };
+    }
+
+    const entries = Object.values(runData.objectManifest);
+    const playerSpritePrompt = buildPlayerSpritePrompt(runData.theme);
+
+    const playerPortraitImageId = entries.find(entry =>
+      entry.kind === 'image'
+      && entry.imageType === 'character'
+      && entry.prompt === PLAYER_PORTRAIT_PROMPT
+    )?.id;
+    const playerSpriteImageId = entries.find(entry =>
+      entry.kind === 'image'
+      && entry.imageType === 'character'
+      && entry.prompt === playerSpritePrompt
+    )?.id;
+
+    let playerPortraitImageUrl: string | undefined;
+    let playerSpriteImageUrl: string | undefined;
+
+    for (const roomState of Object.values(runData.rooms)) {
+      const urls = roomState.payload?.objectUrls;
+      if (!playerPortraitImageUrl && urls?.playerPortraitImageUrl) {
+        playerPortraitImageUrl = urls.playerPortraitImageUrl;
+      }
+      if (!playerSpriteImageUrl && urls?.playerSpriteImageUrl) {
+        playerSpriteImageUrl = urls.playerSpriteImageUrl;
+      }
+      if (playerPortraitImageUrl && playerSpriteImageUrl) break;
+    }
+
+    return {
+      playerPortraitImageId,
+      playerSpriteImageId,
+      playerPortraitImageUrl,
+      playerSpriteImageUrl,
+    };
+  }, [runData]);
 
   if (!gameState || gameState.enemies.length === 0) {
     return <div className="text-white">Loading combat...</div>;
@@ -625,6 +663,34 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     const livingEnemies = gameState.enemies
       .map((enemy, idx) => ({ enemy, idx }))
       .filter(({ enemy }) => enemy.currentHp > 0);
+    const attackPreviewByEnemy = new Map<number, { totalDmg: number; actualDmg: number; isKillingBlow: boolean }>();
+    let projectedPlayerHp = gameState.playerHp;
+    let projectedPlayerBlock = gameState.statusEffects['Block'] || 0;
+    const playerIsVulnerable = Boolean(gameState.statusEffects['Vulnerable']);
+    let predictedKillerName: string | null = null;
+
+    livingEnemies.forEach(({ enemy, idx: enemyIdx }) => {
+      const intent = getNextIntent(enemy, gameState.turn);
+      if (!ATTACK_INTENT_TYPES.has(intent.type)) return;
+
+      let totalDmg = intent.value;
+      if (enemy.statusEffects?.['Strength']) {
+        totalDmg += enemy.statusEffects['Strength'];
+      }
+      if (playerIsVulnerable) {
+        totalDmg = Math.floor(totalDmg * 1.5);
+      }
+
+      const absorbedByBlock = Math.min(projectedPlayerBlock, totalDmg);
+      projectedPlayerBlock -= absorbedByBlock;
+      const actualDmg = Math.max(0, totalDmg - absorbedByBlock);
+      const isKillingBlow = actualDmg > 0 && projectedPlayerHp - actualDmg <= 0 && !predictedKillerName;
+      projectedPlayerHp = Math.max(0, projectedPlayerHp - actualDmg);
+      if (isKillingBlow) predictedKillerName = enemy.name;
+
+      attackPreviewByEnemy.set(enemyIdx, { totalDmg, actualDmg, isKillingBlow });
+    });
+    killerNameRef.current = predictedKillerName;
 
     livingEnemies.forEach(({ enemy, idx: enemyIdx }, seqIdx) => {
       const intent = getNextIntent(enemy, gameState.turn);
@@ -664,22 +730,14 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
             triggerImpactFlash('player');
             setTimeout(() => setPlayerAnim('idle'), 400);
 
-            let dmg = intent.value;
-            if (enemy.statusEffects?.['Strength']) dmg += enemy.statusEffects['Strength'];
-            if (gameState.statusEffects['Vulnerable']) dmg = Math.floor(dmg * 1.5);
+            const attackPreview = attackPreviewByEnemy.get(enemyIdx);
+            const actualDmg = attackPreview?.actualDmg || 0;
+            const totalDmg = attackPreview?.totalDmg || 0;
 
-            let actualDmg = dmg;
-            let pBlock = gameState.statusEffects['Block'] || 0;
-            if (pBlock >= dmg) {
-              actualDmg = 0;
-            } else {
-              actualDmg -= pBlock;
-            }
-
-            if (dmg > 0) {
+            if (totalDmg > 0) {
               if (actualDmg > 0) {
                 spawnParticles('player', 'hit');
-                if (gameState.playerHp - actualDmg <= 0) killerNameRef.current = enemy.name;
+                if (attackPreview?.isKillingBlow) killerNameRef.current = enemy.name;
                 if (actualDmg >= HEAVY_HIT_THRESHOLD) triggerScreenShake();
               } else {
                 spawnParticles('player', 'block', 4);
@@ -708,20 +766,19 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     const totalAnimTime = livingEnemies.length * ENEMY_TURN_STAGGER_MS + PRIMARY_ENEMY_ANIM_MS + SECONDARY_ENEMY_ANIM_MS;
     setTimeout(() => {
       const newState = endTurn(gameState);
+      setGameState(newState);
       if (newState.playerHp <= 0) {
         setIsGameOver(true);
         setTimeout(() => {
           onDefeat({
             damageDealt: totalDamageDealt,
             turns: Math.max(1, gameState.turn),
-            enemiesDefeated: gameState.enemies.filter(e => e.currentHp <= 0).length,
+            enemiesDefeated: newState.enemies.filter(e => e.currentHp <= 0).length,
             cardsPlayed: cardsPlayedRef.current,
-            killerName: killerNameRef.current || gameState.enemies[0].name,
-            finalDeckCount: gameState.deck.length
+            killerName: killerNameRef.current || predictedKillerName || livingEnemies[0]?.enemy.name || gameState.enemies[0].name,
+            finalDeckCount: newState.deck.length
           });
         }, 1500); // Wait 1.5s then trigger defeat screen via RunManager
-      } else {
-        setGameState(newState);
       }
     }, totalAnimTime);
   };
@@ -749,9 +806,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
   };
 
   const isEnemyFlyingForRender = (enemyState: Enemy | Boss): boolean => {
-    if (typeof enemyState.isFlying === 'boolean') return enemyState.isFlying;
-    const source = `${enemyState.name || ''} ${enemyState.description || ''} ${enemyState.imagePrompt || ''}`;
-    return FLYING_ENEMY_KEYWORDS.test(source);
+    return inferEnemyIsFlying(enemyState);
   };
 
   const roomRefs = roomContent?.objectRefs;
@@ -765,11 +820,15 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     || roomUrls?.backgroundImageUrl
     || resolveManifestObjectUrl(runData, backgroundObjectId);
 
-  const playerPortraitObjectId = roomRefs?.playerPortraitImageId;
-  const playerPortraitSrc = roomUrls?.playerPortraitImageUrl || resolveManifestObjectUrl(runData, playerPortraitObjectId);
-  const playerSpriteObjectId = roomRefs?.playerSpriteImageId;
+  const playerPortraitObjectId = roomRefs?.playerPortraitImageId || sharedPlayerRefs.playerPortraitImageId;
+  const playerPortraitSrc = roomUrls?.playerPortraitImageUrl
+    || sharedPlayerRefs.playerPortraitImageUrl
+    || resolveManifestObjectUrl(runData, playerPortraitObjectId);
+  const playerSpriteObjectId = roomRefs?.playerSpriteImageId || sharedPlayerRefs.playerSpriteImageId;
   const playerSpritePrompt = buildPlayerSpritePrompt(runData.theme);
-  const playerSpriteSrc = roomUrls?.playerSpriteImageUrl || resolveManifestObjectUrl(runData, playerSpriteObjectId);
+  const playerSpriteSrc = roomUrls?.playerSpriteImageUrl
+    || sharedPlayerRefs.playerSpriteImageUrl
+    || resolveManifestObjectUrl(runData, playerSpriteObjectId);
   const enemyIndexes = gameState.enemies.map((_, idx) => idx);
   const flyingEnemyIndexes = isBossEncounter
     ? []
@@ -913,21 +972,23 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
 
       {/* Arena Center */}
       <div
-        className="flex-1 min-h-0 flex justify-between items-end px-4 sm:px-10 lg:px-20 xl:px-48 pb-2 sm:pb-4 lg:pb-8 pt-10 sm:pt-14 lg:pt-16 relative z-10"
+        className="flex-1 min-h-0 flex justify-between items-end px-0 sm:px-0 lg:px-2 xl:px-6 pb-2 sm:pb-4 lg:pb-8 pt-10 sm:pt-14 lg:pt-16 relative z-10"
         style={{ transform: `scale(${sceneScale})`, transformOrigin: 'center bottom' }}
       >
         {/* Shared combat baselines: ground (player + ground enemies) and air lane (flying enemies) */}
-        <div className="pointer-events-none absolute inset-x-4 sm:inset-x-8 lg:inset-x-14 bottom-3 sm:bottom-6 lg:bottom-8 z-[1]">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[1]">
           <div className="relative h-[clamp(5rem,16vh,10rem)]">
-            <div className="absolute left-0 right-0 bottom-0 h-[3px] rounded-full bg-gradient-to-r from-transparent via-slate-200/75 to-transparent shadow-[0_0_18px_rgba(148,163,184,0.45)]" />
-            <div className="absolute left-[52%] right-0 bottom-[clamp(3.6rem,10vh,7rem)] h-[2px] rounded-full bg-gradient-to-r from-transparent via-cyan-200/70 to-transparent shadow-[0_0_14px_rgba(103,232,249,0.4)]" />
+            {/* Ground line – invisible, kept for layout reference */}
+            <div className="absolute left-0 right-0 bottom-0 h-[1px]" />
+            {/* Air lane line – invisible */}
+            <div className="absolute left-[52%] right-0 bottom-[clamp(3.6rem,10vh,7rem)] h-[1px]" />
           </div>
         </div>
 
         {/* Player Sprite */}
         <div
           id="combat-player"
-          className="flex flex-col items-center justify-end h-[clamp(18rem,44vh,28rem)] z-20 relative w-[clamp(11rem,18vw,16rem)]"
+          className="flex flex-col items-center justify-end h-[clamp(22rem,52vh,32rem)] z-20 relative w-[clamp(13rem,22vw,18rem)]"
           style={{ marginBottom: `-${groundPlacementDropPx}px` }}
         >
           {gameState.playerHp / gameState.playerMaxHp < 0.25 && (
@@ -936,18 +997,18 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
           {activeSynergies.length > 0 && (
             <div className="absolute inset-0 rounded-full bg-yellow-400 blur-[50px] pointer-events-none z-0 animate-synergy-aura" />
           )}
-          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-6 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${playerAnim === 'attack' ? 'animate-shadow-attack-player' : 'animate-shadow-breathe-player'}`} />
+          <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 w-44 h-8 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${playerAnim === 'attack' ? 'animate-shadow-attack-player' : 'animate-shadow-breathe-player'}`} />
           <motion.div
             variants={playerVariants}
             initial="idle"
             animate={playerAnim}
-            className="w-full h-[clamp(14rem,32vh,20rem)] flex items-center justify-center relative z-10"
+            className="w-full h-[clamp(16rem,40vh,24rem)] flex items-center justify-center relative z-10"
           >
             <GameImage
               src={playerSpriteSrc}
               prompt={playerSpritePrompt}
               fileKey={playerSpriteObjectId}
-              className="w-full h-full object-contain scale-[1.08] sm:scale-[1.2] lg:scale-[1.35] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none"
+              className="w-full h-full object-contain scale-[1.15] sm:scale-[1.3] lg:scale-[1.5] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none"
               alt="Player"
               type="character"
             />
@@ -981,7 +1042,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
         </div>
 
         {/* Enemy Sprites */}
-        <div className={`relative flex items-end justify-center z-10 ${isBossEncounter ? 'w-[clamp(20rem,34vw,30rem)] h-[clamp(34rem,78vh,52rem)]' : 'w-[clamp(22rem,45vw,42rem)] h-[clamp(20rem,40vh,34rem)]'}`}>
+        <div className={`relative flex items-end justify-center z-10 ${isBossEncounter ? 'w-[clamp(22rem,36vw,32rem)] h-[clamp(36rem,82vh,54rem)]' : 'w-[clamp(24rem,48vw,44rem)] h-[clamp(24rem,50vh,38rem)]'}`}>
           {gameState.enemies.map((enemyState, idx) => {
             const isBoss = isBossEncounter && idx === 0;
             const isFlying = !isBoss && isEnemyFlyingForRender(enemyState);
@@ -1005,7 +1066,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                 key={enemyState.id}
                 id={`combat-enemy-${idx}`}
                 className={`absolute flex flex-col items-center justify-end transition-all duration-300
-                  ${isBoss ? 'h-[clamp(34rem,78vh,52rem)] w-[clamp(18rem,28vw,28rem)]' : 'h-[clamp(18rem,43vh,28rem)] w-[clamp(10rem,16vw,14rem)]'}
+                  ${isBoss ? 'h-[clamp(36rem,82vh,54rem)] w-[clamp(20rem,30vw,30rem)]' : 'h-[clamp(22rem,52vh,32rem)] w-[clamp(13rem,20vw,18rem)]'}
                   ${isDead ? 'opacity-0 pointer-events-none' : ''}
                   ${isTargetable ? 'cursor-pointer' : ''}
                 `}
@@ -1022,7 +1083,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                   <div className="absolute inset-0 rounded-full bg-orange-600 blur-[60px] pointer-events-none z-0 animate-enrage-aura" />
                 )}
 
-                <div className={`flex flex-col items-center z-50 relative ${isBoss ? 'w-[clamp(15rem,22vw,24rem)] mb-[clamp(8rem,22vh,14rem)]' : 'w-[clamp(9rem,14vw,13rem)] mb-3 sm:mb-4'}`}>
+                <div className={`flex flex-col items-center z-50 relative ${isBoss ? 'w-[clamp(16rem,24vw,26rem)] mb-[clamp(10rem,26vh,16rem)]' : 'w-[clamp(10rem,16vw,14rem)] mb-4 sm:mb-6'}`}>
                   {/* Intent badge */}
                   {!isDead && (
                     <div className="absolute top-8 left-0 bg-slate-800/90 text-white drop-shadow-md flex items-center gap-2 z-30 px-3 py-1.5 rounded-xl border border-slate-600 shadow-lg">
@@ -1069,19 +1130,19 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                 </div>
 
                 {/* Ground Shadow */}
-                <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${isBoss ? 'w-64 h-12' : 'w-40 h-8'} ${enemyAnims[idx] === 'attack' ? 'animate-shadow-attack-enemy' : 'animate-shadow-breathe-enemy'}`} />
+                <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${isBoss ? 'w-72 h-14' : 'w-52 h-10'} ${enemyAnims[idx] === 'attack' ? 'animate-shadow-attack-enemy' : 'animate-shadow-breathe-enemy'}`} />
                 <motion.div
                   variants={enemyVariants}
                   initial="idle"
                   animate={enemyAnims[idx] || 'idle'}
-                  className={`flex items-center justify-center relative z-10 ${isBoss ? 'w-[clamp(16rem,24vw,24rem)] h-[clamp(20rem,42vh,32rem)]' : 'w-[clamp(8rem,11vw,12rem)] h-[clamp(10rem,18vh,14rem)]'}`}
+                  className={`flex items-center justify-center relative z-10 ${isBoss ? 'w-[clamp(18rem,26vw,26rem)] h-[clamp(22rem,46vh,34rem)]' : 'w-[clamp(12rem,16vw,18rem)] h-[clamp(16rem,34vh,22rem)]'}`}
                 >
                   {(enemyState.imagePrompt || enemyImageSrc) ? (
                     <GameImage
                       src={enemyImageSrc}
                       prompt={enemyImagePrompt}
                       fileKey={enemyImageObjectId}
-                      className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.08] sm:scale-[1.22] lg:scale-[1.4]' : 'scale-[1.0] sm:scale-[1.08] lg:scale-[1.2]'}`}
+                      className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.12] sm:scale-[1.28] lg:scale-[1.5]' : 'scale-[1.08] sm:scale-[1.18] lg:scale-[1.35]'}`}
                       alt={enemyState.name}
                       type="character"
                     />
