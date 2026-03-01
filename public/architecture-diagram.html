@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Famble - Project Architecture Diagram</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --glass-bg: rgba(255, 255, 255, 0.03);
+            --glass-border: rgba(255, 255, 255, 0.08);
+            --primary: #9d4edd;
+            --secondary: #00f5ff;
+            --accent: #ff007f;
+            --mistral: #f59e0b;
+            --gemini: #3b82f6;
+            --elevenlabs: #10b981;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            overflow: hidden;
+            background-image:
+                radial-gradient(circle at 15% 50%, rgba(157, 78, 221, 0.15), transparent 25%),
+                radial-gradient(circle at 85% 30%, rgba(0, 245, 255, 0.1), transparent 25%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        #presentation-area {
+            position: relative;
+            width: 1200px;
+            height: 900px;
+            perspective: 1000px;
+            /* Scale dynamically based on window size */
+            transform: scale(min(calc(100vw / 1220), calc(100vh / 920)));
+            transform-origin: center center;
+        }
+
+        /* Connecting Lines Container */
+        #svg-lines {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        .line {
+            fill: none;
+            stroke-width: 3;
+            stroke-dasharray: 10;
+            opacity: 0;
+            transition: opacity 0.8s ease;
+        }
+
+        .line.active {
+            opacity: 0.6;
+            animation: dash 30s linear infinite;
+        }
+
+        @keyframes dash {
+            to {
+                stroke-dashoffset: -1000;
+            }
+        }
+
+        /* Glassmorphic Nodes */
+        .node {
+            position: absolute;
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            opacity: 0;
+            transform: translateY(20px) scale(0.95);
+            transition: all 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+
+        .node::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 100%;
+            border-radius: 16px;
+            opacity: 0;
+            transition: opacity 0.4s ease;
+            z-index: -1;
+        }
+
+        .node:hover {
+            transform: translateY(-5px) scale(1.02) !important;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.5);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .node.active {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+
+        .node-icon {
+            font-size: 2rem;
+            margin-bottom: 8px;
+            display: inline-block;
+        }
+
+        .node-title {
+            font-size: 1.15rem;
+            font-weight: 600;
+            margin-bottom: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        .node-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        /* Specific Nodes positioning */
+        #node-input {
+            top: 30px;
+            left: 450px;
+            width: 300px;
+            border-top: 4px solid var(--primary);
+        }
+
+        #node-mistral-ocr {
+            top: 180px;
+            left: 450px;
+            width: 300px;
+            border-top: 4px solid var(--mistral);
+            background: rgba(245, 158, 11, 0.05);
+        }
+
+        #node-mistral-logic {
+            top: 330px;
+            left: 420px;
+            width: 360px;
+            border-top: 4px solid var(--mistral);
+            background: rgba(245, 158, 11, 0.05);
+        }
+
+        #node-gemini {
+            top: 520px;
+            left: 100px;
+            width: 280px;
+            border-top: 4px solid var(--gemini);
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        #node-eleven-sfx {
+            top: 520px;
+            left: 460px;
+            width: 280px;
+            border-top: 4px solid var(--elevenlabs);
+            background: rgba(16, 185, 129, 0.05);
+        }
+
+        #node-eleven-tts {
+            top: 520px;
+            left: 820px;
+            width: 280px;
+            border-top: 4px solid var(--elevenlabs);
+            background: rgba(16, 185, 129, 0.05);
+        }
+
+        #node-game {
+            top: 710px;
+            left: 450px;
+            width: 300px;
+            border-top: 4px solid var(--accent);
+        }
+
+        /* Titles and UI */
+        .header {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            opacity: 0;
+            transform: translateY(-20px);
+            transition: all 0.8s ease;
+        }
+
+        .header.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            color: transparent;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: var(--primary);
+            font-weight: 400;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 40px;
+            left: 40px;
+            display: flex;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-family: inherit;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(255, 255, 255, 0.3);
+        }
+
+        .step-indicator {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            font-weight: 300;
+        }
+
+        .pulse-glow {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            top: 0;
+            left: 0;
+            border-radius: 16px;
+            box-shadow: 0 0 30px var(--glow-color);
+            opacity: 0;
+            z-index: -1;
+            transition: opacity 0.4s;
+        }
+
+        .node.highlighted .pulse-glow {
+            animation: pulse 2s infinite alternate;
+            opacity: 0.5;
+        }
+
+        @keyframes pulse {
+            0% {
+                opacity: 0.2;
+                transform: scale(1);
+            }
+
+            100% {
+                opacity: 0.6;
+                transform: scale(1.05);
+            }
+        }
+
+        .desc-box {
+            position: absolute;
+            bottom: 30px;
+            right: 40px;
+            width: 380px;
+            min-height: 100px;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-left: 4px solid var(--primary);
+            padding: 20px;
+            border-radius: 12px;
+            opacity: 0;
+            transform: translateY(20px);
+            transition: all 0.5s ease;
+            display: flex;
+            align-items: center;
+        }
+
+        .desc-box.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .desc-text {
+            font-size: 1.05rem;
+            line-height: 1.5;
+            color: #e2e8f0;
+            margin: 0;
+        }
+
+        .glow-dot {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background: #fff;
+            border-radius: 50%;
+            opacity: 0;
+            box-shadow: 0 0 10px 2px #fff;
+            offset-path: path(var(--path));
+            animation: moveDot 2s linear infinite;
+        }
+
+        @keyframes moveDot {
+            0% {
+                offset-distance: 0%;
+                opacity: 0;
+            }
+
+            20% {
+                opacity: 1;
+            }
+
+            80% {
+                opacity: 1;
+            }
+
+            100% {
+                offset-distance: 100%;
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="presentation-area">
+
+        <svg id="svg-lines">
+            <!-- Content to OCR -->
+            <path id="line-1" class="line" d="M 600 135 L 600 180" stroke="var(--primary)"></path>
+
+            <!-- OCR to Logic -->
+            <path id="line-2" class="line" d="M 600 285 L 600 330" stroke="var(--mistral)"></path>
+
+            <!-- Logic to 3 Parallel APIs -->
+            <path id="line-3a" class="line" d="M 600 455 C 600 480, 240 490, 240 520" stroke="var(--mistral)"></path>
+            <path id="line-3b" class="line" d="M 600 455 L 600 520" stroke="var(--mistral)"></path>
+            <path id="line-3c" class="line" d="M 600 455 C 600 480, 960 490, 960 520" stroke="var(--mistral)"></path>
+
+            <!-- 3 Parallel APIs to Playable Game -->
+            <path id="line-4a" class="line" d="M 240 645 C 240 675, 600 685, 600 710" stroke="var(--gemini)"></path>
+            <path id="line-4b" class="line" d="M 600 645 L 600 710" stroke="var(--elevenlabs)"></path>
+            <path id="line-4c" class="line" d="M 960 645 C 960 675, 600 685, 600 710" stroke="var(--elevenlabs)"></path>
+        </svg>
+
+        <div class="header" id="header">
+            <h1>Famble Pipeline</h1>
+            <div class="subtitle">AI Content Generation Flow</div>
+        </div>
+
+        <!-- Nodes -->
+        <div class="node" id="node-input" style="--glow-color: var(--primary);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">📄</div>
+            <div class="node-title">Your Content</div>
+            <div class="node-desc">(PDF / URL / Image / Text)</div>
+        </div>
+
+        <div class="node" id="node-mistral-ocr" style="--glow-color: var(--mistral);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">👁️</div>
+            <div class="node-title">Mistral OCR</div>
+            <div class="node-desc">Extract & prepare source</div>
+        </div>
+
+        <div class="node" id="node-mistral-logic" style="--glow-color: var(--mistral);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">🧠</div>
+            <div class="node-title">Mistral Large 3</div>
+            <div class="node-desc">Game logic → JSON<br />(cards, enemies, boss, map, prompts)</div>
+        </div>
+
+        <div class="node" id="node-gemini" style="--glow-color: var(--gemini);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">🎨</div>
+            <div class="node-title">Gemini</div>
+            <div class="node-desc">Images</div>
+        </div>
+
+        <div class="node" id="node-eleven-sfx" style="--glow-color: var(--elevenlabs);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">🔊</div>
+            <div class="node-title">ElevenLabs</div>
+            <div class="node-desc">SFX + Music</div>
+        </div>
+
+        <div class="node" id="node-eleven-tts" style="--glow-color: var(--elevenlabs);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">🎙️</div>
+            <div class="node-title">ElevenLabs</div>
+            <div class="node-desc">Narrator</div>
+        </div>
+
+        <div class="node" id="node-game" style="--glow-color: var(--accent);">
+            <div class="pulse-glow"></div>
+            <div class="node-icon">🎮</div>
+            <div class="node-title">Playable Game</div>
+            <div class="node-desc">(browser, mobile)</div>
+        </div>
+
+        <div class="controls">
+            <button class="btn" id="btn-prev">❮ Prev</button>
+            <button class="btn" id="btn-next">Next ❯</button>
+            <div class="step-indicator">Step <span id="step-count">0</span> / 6</div>
+            <div style="margin-left:10px; font-size: 0.8rem; color:#64748b;">(Hint: Use Space or Arrow Keys)</div>
+        </div>
+
+        <div class="desc-box" id="desc-box">
+            <div class="desc-text" id="desc-text">Ready to present. Press Next to begin.</div>
+        </div>
+
+    </div>
+
+    <script>
+        const steps = [
+            {
+                activate: ['header'], highlight: [], lines: [],
+                text: "Welcome to the Famble content pipeline. This diagram showcases how raw content is transformed into a fully playable game."
+            },
+            {
+                activate: ['header', 'node-input', 'desc-box'],
+                highlight: ['node-input'], lines: [],
+                text: "Step 1: The user provides their input material. This can be a text prompt, a PDF, a web URL, or an uploaded image."
+            },
+            {
+                activate: ['header', 'node-input', 'node-mistral-ocr', 'desc-box'],
+                highlight: ['node-mistral-ocr'], lines: ['line-1'],
+                text: "Step 2: The content passes to Mistral OCR. It extracts text, cleans up formatting, and prepares the source material for the LLM."
+            },
+            {
+                activate: ['header', 'node-input', 'node-mistral-ocr', 'node-mistral-logic', 'desc-box'],
+                highlight: ['node-mistral-logic'], lines: ['line-1', 'line-2'],
+                text: "Step 3: Mistral Large 3 takes over. It parses the prepared content to construct structured game logic JSON: enemies, cards, map layout, boss stats, and detailed audio/visual prompts."
+            },
+            {
+                activate: ['header', 'node-input', 'node-mistral-ocr', 'node-mistral-logic', 'node-gemini', 'node-eleven-sfx', 'node-eleven-tts', 'desc-box'],
+                highlight: ['node-gemini', 'node-eleven-sfx', 'node-eleven-tts'],
+                lines: ['line-1', 'line-2', 'line-3a', 'line-3b', 'line-3c'],
+                text: "Step 4: The data drives parallel generative AI models. Gemini synthesizes the immersive imagery, while ElevenLabs synthesizes both the environmental SFX/Music and the dramatic Narrator TTS."
+            },
+            {
+                activate: ['header', 'node-input', 'node-mistral-ocr', 'node-mistral-logic', 'node-gemini', 'node-eleven-sfx', 'node-eleven-tts', 'node-game', 'desc-box'],
+                highlight: ['node-game'],
+                lines: ['line-1', 'line-2', 'line-3a', 'line-3b', 'line-3c', 'line-4a', 'line-4b', 'line-4c'],
+                text: "Final Step: All the assets and logic compile instantly in the client. The result is a fully playable Slay the Spire-style run that runs seamlessly on browser or mobile!"
+            },
+            {
+                activate: ['header', 'node-input', 'node-mistral-ocr', 'node-mistral-logic', 'node-gemini', 'node-eleven-sfx', 'node-eleven-tts', 'node-game', 'desc-box'],
+                highlight: [],
+                lines: ['line-1', 'line-2', 'line-3a', 'line-3b', 'line-3c', 'line-4a', 'line-4b', 'line-4c'],
+                text: "The Pipeline is complete. You have transformed static files into an immersive deckbuilding adventure!"
+            }
+        ];
+
+        let currentStep = 0;
+
+        function updateDiagram() {
+            const step = steps[currentStep];
+            document.getElementById('step-count').innerText = currentStep;
+            document.getElementById('desc-text').innerText = step.text;
+
+            document.querySelectorAll('.node, .header, .desc-box').forEach(el => {
+                el.classList.toggle('active', step.activate.includes(el.id));
+            });
+
+            document.querySelectorAll('.node').forEach(el => {
+                el.classList.toggle('highlighted', step.highlight.includes(el.id));
+            });
+
+            document.querySelectorAll('.line').forEach(el => {
+                el.classList.toggle('active', step.lines.includes(el.id));
+            });
+        }
+
+        document.getElementById('btn-next').addEventListener('click', () => {
+            if (currentStep < steps.length - 1) { currentStep++; updateDiagram(); }
+        });
+        document.getElementById('btn-prev').addEventListener('click', () => {
+            if (currentStep > 0) { currentStep--; updateDiagram(); }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowRight') {
+                e.preventDefault();
+                if (currentStep < steps.length - 1) { currentStep++; updateDiagram(); }
+            } else if (e.code === 'ArrowLeft') {
+                e.preventDefault();
+                if (currentStep > 0) { currentStep--; updateDiagram(); }
+            }
+        });
+
+        updateDiagram();
+
+        function addMovingDot(pathId) {
+            const path = document.getElementById(pathId);
+            const pathData = path.getAttribute('d');
+            const dot = document.createElement('div');
+            dot.className = 'glow-dot';
+            dot.style.setProperty('--path', `path('${pathData}')`);
+
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    dot.style.display = mutation.target.classList.contains('active') ? 'block' : 'none';
+                });
+            });
+            observer.observe(path, { attributes: true, attributeFilter: ['class'] });
+
+            dot.style.display = 'none';
+            document.getElementById('presentation-area').appendChild(dot);
+        }
+
+        ['line-1', 'line-2', 'line-3a', 'line-3b', 'line-3c', 'line-4a', 'line-4b', 'line-4c'].forEach(addMovingDot);
+
+    </script>
+</body>
+
+</html>

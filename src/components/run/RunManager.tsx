@@ -26,6 +26,7 @@ import { PlayerHUD } from './PlayerHUD';
 import { GameImage } from '../GameImage';
 import { saveRunSnapshot, resolveManifestObjectUrl } from '../../services/geminiService';
 import { RoomGenerationOrchestrator } from '../../services/roomGenerationOrchestrator';
+import { generateMusic } from '../../services/audioService';
 import { DefeatScreen } from './DefeatScreen';
 import type { DefeatStats } from './DefeatScreen';
 import { VictoryScreen } from './VictoryScreen';
@@ -62,6 +63,8 @@ interface RewardStats {
   gold: number;
 }
 
+type RunView = 'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire' | 'defeat' | 'victory';
+
 export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const isBasicStarterCard = (card: Card): boolean => {
     const normalized = card.name.trim().toLowerCase();
@@ -71,7 +74,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   const [activeRunData, setActiveRunData] = useState<RunData>(runData);
   const [nodes, setNodes] = useState<MapNode[]>([]);
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
-  const [view, setView] = useState<'map' | 'combat' | 'reward' | 'event' | 'shop' | 'treasure' | 'campfire' | 'defeat' | 'victory'>('map');
+  const [view, setView] = useState<RunView>('map');
   const [deck, setDeck] = useState<Card[]>(() => {
     const strike = runData.cards.find(c => c.name.trim().toLowerCase() === 'strike') || runData.cards[0];
     const defend = runData.cards.find(c => c.name.trim().toLowerCase() === 'defend') || runData.cards[1] || runData.cards[0];
@@ -108,6 +111,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   } | null>(null);
   const runDataRef = useRef<RunDataV2 | null>(null);
   const orchestratorRef = useRef<RoomGenerationOrchestrator | null>(null);
+  const ambientMusicRef = useRef<HTMLAudioElement | null>(null);
 
   const isV2 = useMemo(() => isRunDataV2(activeRunData), [activeRunData]);
 
@@ -209,10 +213,40 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       .slice(0, Math.min(3, source.length));
   };
 
+  const ensureThreeRewardCards = (cards: Card[]): Card[] => {
+    const hydrated: Card[] = cards.slice(0, 3).map(card => hydrateCardImage(card));
+    if (hydrated.length >= 3) return hydrated;
+
+    const source: Card[] = getRewardSource();
+    if (source.length === 0) return hydrated;
+
+    const fallback: Card[] = [...source].map(card => hydrateCardImage(card));
+    let cursor = 0;
+    while (hydrated.length < 3) {
+      hydrated.push(fallback[cursor % fallback.length]);
+      cursor += 1;
+    }
+    return hydrated;
+  };
+
   const clearRewardState = () => {
     setRewardCards([]);
     setRewardStats(null);
   };
+
+  const stopAmbientMusic = useCallback(() => {
+    const audio = ambientMusicRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.src = '';
+    ambientMusicRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopAmbientMusic();
+    };
+  }, [stopAmbientMusic]);
 
   const availableCards = useMemo(() => {
     return activeRunData.cards
@@ -443,10 +477,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       setView('victory');
     } else {
       const nextGold = gold + 25;
-      let nextRewardCards = getRandomRewardCards();
+      let nextRewardCards = ensureThreeRewardCards(getRandomRewardCards());
       const payload = activeRoomPayload || getRoomPayload(currentNodeId);
       if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') && payload.rewardCards && payload.rewardCards.length > 0) {
-        nextRewardCards = payload.rewardCards.slice(0, 3).map(hydrateCardImage);
+        nextRewardCards = ensureThreeRewardCards(payload.rewardCards);
       }
       const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
 
@@ -580,6 +614,132 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }, [currentNodeId, activeRunData, getRoomPayload]);
 
   const currentRoomPayload = activeRoomPayload || getRoomPayload(currentNodeId);
+
+  const runAmbientConfig = useMemo((): { url?: string; prompt?: string; objectId?: string } => {
+    let prompt = activeRunData.roomMusicPrompt;
+    let objectId: string | undefined;
+    let resolvedUrl: string | undefined;
+
+    const absorbCombatPayload = (payload: RoomContentPayload | null | undefined) => {
+      if (!payload) return;
+      if (payload.nodeType !== 'Combat' && payload.nodeType !== 'Elite') return;
+
+      if (!prompt && payload.roomMusicPrompt) {
+        prompt = payload.roomMusicPrompt;
+      }
+      if (!objectId && payload.objectRefs?.roomMusicId) {
+        objectId = payload.objectRefs.roomMusicId;
+      }
+
+      const payloadUrl = payload.objectUrls?.roomMusicUrl
+        || resolveManifestObjectUrl(activeRunData, payload.objectRefs?.roomMusicId);
+      if (payloadUrl && !resolvedUrl) {
+        resolvedUrl = payloadUrl;
+      }
+    };
+
+    absorbCombatPayload(currentRoomPayload);
+
+    if (isRunDataV2(activeRunData)) {
+      const firstCombatNode = activeRunData.node_map.find(node =>
+        (node.row === 0) && (node.type === 'Combat' || node.type === 'Elite')
+      ) || activeRunData.node_map.find(node => node.type === 'Combat' || node.type === 'Elite');
+      const firstCombatPayload = firstCombatNode
+        ? activeRunData.rooms[firstCombatNode.id]?.payload
+        : undefined;
+      absorbCombatPayload(firstCombatPayload);
+
+      if (!resolvedUrl) {
+        for (const roomState of Object.values(activeRunData.rooms)) {
+          absorbCombatPayload(roomState.payload);
+          if (resolvedUrl) break;
+        }
+      }
+    }
+
+    return { url: resolvedUrl, prompt, objectId };
+  }, [activeRunData, currentRoomPayload]);
+
+  const shouldPlayRunAmbient = view !== 'combat';
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!shouldPlayRunAmbient) {
+      stopAmbientMusic();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const readMusicEnabled = (): boolean => {
+      if (typeof window === 'undefined') return true;
+      try {
+        const saved = window.localStorage.getItem('famble_music_playing');
+        return saved !== null ? JSON.parse(saved) : true;
+      } catch {
+        return true;
+      }
+    };
+
+    const normalizeUrl = (value: string): string => {
+      if (typeof window === 'undefined') return value;
+      try {
+        return new URL(value, window.location.origin).toString();
+      } catch {
+        return value;
+      }
+    };
+
+    const startAmbient = (url: string) => {
+      if (cancelled || !url) return;
+
+      const existing = ambientMusicRef.current;
+      if (existing) {
+        const existingSrc = normalizeUrl(existing.src);
+        const nextSrc = normalizeUrl(url);
+        if (existingSrc === nextSrc) {
+          if (readMusicEnabled()) {
+            existing.play().catch(e => console.log('Ambient autoplay prevented', e));
+          } else {
+            existing.pause();
+          }
+          return;
+        }
+      }
+
+      stopAmbientMusic();
+
+      const audio = new Audio(url);
+      audio.loop = true;
+      audio.volume = 0.16;
+      ambientMusicRef.current = audio;
+
+      if (readMusicEnabled()) {
+        audio.play().catch(e => console.log('Ambient autoplay prevented', e));
+      }
+    };
+
+    if (runAmbientConfig.url) {
+      startAmbient(runAmbientConfig.url);
+    } else if (runAmbientConfig.prompt) {
+      generateMusic(runAmbientConfig.prompt, {
+        theme: activeRunData.theme,
+        mode: 'room',
+        cacheTag: runAmbientConfig.objectId,
+        fileTag: runAmbientConfig.objectId,
+      })
+        .then(startAmbient)
+        .catch(err => console.error('Failed to start run ambient music:', err));
+    } else {
+      stopAmbientMusic();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRunData.theme, runAmbientConfig, shouldPlayRunAmbient, stopAmbientMusic]);
+
   const currentEventPayload: EventRoomContent | null = useMemo(() => {
     if (!currentRoomPayload || currentRoomPayload.nodeType !== 'Event') return null;
     return {
@@ -671,8 +831,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    const cardsToShow = (rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3))
-      .map(hydrateCardImage);
+    const cardsToShow = ensureThreeRewardCards(rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3));
     const statsToShow: RewardStats = rewardStats ?? {
       damageDealt: 0,
       turns: 1,

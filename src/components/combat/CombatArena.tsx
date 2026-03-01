@@ -15,8 +15,8 @@ import {
   buildBossSpritePrompt,
   buildDefaultBattleBackgroundPrompt,
   buildEnemySpritePrompt,
+  buildPlayerPortraitPrompt,
   buildPlayerSpritePrompt,
-  PLAYER_PORTRAIT_PROMPT,
   resolveManifestObjectUrl,
 } from '../../services/geminiService';
 import { inferEnemyIsFlying } from '../../../shared/utils/enemy';
@@ -378,12 +378,13 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     }
 
     const entries = Object.values(runData.objectManifest);
+    const playerPortraitPrompt = buildPlayerPortraitPrompt(runData.theme);
     const playerSpritePrompt = buildPlayerSpritePrompt(runData.theme);
 
     const playerPortraitImageId = entries.find(entry =>
       entry.kind === 'image'
       && entry.imageType === 'character'
-      && entry.prompt === PLAYER_PORTRAIT_PROMPT
+      && entry.prompt === playerPortraitPrompt
     )?.id;
     const playerSpriteImageId = entries.find(entry =>
       entry.kind === 'image'
@@ -821,6 +822,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     || resolveManifestObjectUrl(runData, backgroundObjectId);
 
   const playerPortraitObjectId = roomRefs?.playerPortraitImageId || sharedPlayerRefs.playerPortraitImageId;
+  const playerPortraitPrompt = buildPlayerPortraitPrompt(runData.theme);
   const playerPortraitSrc = roomUrls?.playerPortraitImageUrl
     || sharedPlayerRefs.playerPortraitImageUrl
     || resolveManifestObjectUrl(runData, playerPortraitObjectId);
@@ -850,7 +852,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
     const lane = isFlying ? flyingEnemyIndexes : groundEnemyIndexes;
     const laneIndex = Math.max(0, lane.indexOf(idx));
     const laneCount = Math.max(1, lane.length);
-    const spacing = isFlying ? 150 : 170;
+    const spacing = isFlying ? 170 : 188;
     const offset = (laneIndex - (laneCount - 1) / 2) * spacing;
     const baseBottom = isFlying ? (132 - groundPlacementDropPx) : -groundPlacementDropPx;
     const depthLift = !isFlying ? laneIndex * 10 : laneIndex * 6;
@@ -906,7 +908,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
         <div className="w-14 h-14 rounded-full border-[3px] border-[#334155] bg-slate-800 flex items-center justify-center overflow-hidden z-20 shadow-lg relative">
           <GameImage
             src={playerPortraitSrc}
-            prompt={PLAYER_PORTRAIT_PROMPT}
+            prompt={playerPortraitPrompt}
             fileKey={playerPortraitObjectId}
             className="w-[120%] h-[120%] object-cover absolute"
             alt="Player"
@@ -1042,7 +1044,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
         </div>
 
         {/* Enemy Sprites */}
-        <div className={`relative flex items-end justify-center z-10 ${isBossEncounter ? 'w-[clamp(22rem,36vw,32rem)] h-[clamp(36rem,82vh,54rem)]' : 'w-[clamp(24rem,48vw,44rem)] h-[clamp(24rem,50vh,38rem)]'}`}>
+        <div className={`relative flex items-end justify-center z-10 ${isBossEncounter ? 'w-[clamp(22rem,36vw,32rem)] h-[clamp(36rem,82vh,54rem)]' : 'w-[clamp(26rem,52vw,48rem)] h-[clamp(26rem,56vh,42rem)]'}`}>
           {gameState.enemies.map((enemyState, idx) => {
             const isBoss = isBossEncounter && idx === 0;
             const isFlying = !isBoss && isEnemyFlyingForRender(enemyState);
@@ -1066,7 +1068,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                 key={enemyState.id}
                 id={`combat-enemy-${idx}`}
                 className={`absolute flex flex-col items-center justify-end transition-all duration-300
-                  ${isBoss ? 'h-[clamp(36rem,82vh,54rem)] w-[clamp(20rem,30vw,30rem)]' : 'h-[clamp(22rem,52vh,32rem)] w-[clamp(13rem,20vw,18rem)]'}
+                  ${isBoss ? 'h-[clamp(36rem,82vh,54rem)] w-[clamp(20rem,30vw,30rem)]' : 'h-[clamp(24rem,58vh,36rem)] w-[clamp(15rem,23vw,20rem)]'}
                   ${isDead ? 'opacity-0 pointer-events-none' : ''}
                   ${isTargetable ? 'cursor-pointer' : ''}
                 `}
@@ -1083,7 +1085,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                   <div className="absolute inset-0 rounded-full bg-orange-600 blur-[60px] pointer-events-none z-0 animate-enrage-aura" />
                 )}
 
-                <div className={`flex flex-col items-center z-50 relative ${isBoss ? 'w-[clamp(16rem,24vw,26rem)] mb-[clamp(10rem,26vh,16rem)]' : 'w-[clamp(10rem,16vw,14rem)] mb-4 sm:mb-6'}`}>
+                <div className={`flex flex-col items-center z-50 relative ${isBoss ? 'w-[clamp(16rem,24vw,26rem)] mb-[clamp(14rem,34vh,22rem)]' : 'w-[clamp(11rem,18vw,16rem)] mb-[clamp(5rem,13vh,9rem)]'}`}>
                   {/* Intent badge */}
                   {!isDead && (
                     <div className="absolute top-8 left-0 bg-slate-800/90 text-white drop-shadow-md flex items-center gap-2 z-30 px-3 py-1.5 rounded-xl border border-slate-600 shadow-lg">
@@ -1130,19 +1132,19 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                 </div>
 
                 {/* Ground Shadow */}
-                <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${isBoss ? 'w-72 h-14' : 'w-52 h-10'} ${enemyAnims[idx] === 'attack' ? 'animate-shadow-attack-enemy' : 'animate-shadow-breathe-enemy'}`} />
+                <div className={`absolute -bottom-2 left-1/2 -translate-x-1/2 bg-black/60 rounded-[100%] blur-[6px] pointer-events-none z-0 ${isBoss ? 'w-72 h-14' : 'w-60 h-12'} ${enemyAnims[idx] === 'attack' ? 'animate-shadow-attack-enemy' : 'animate-shadow-breathe-enemy'}`} />
                 <motion.div
                   variants={enemyVariants}
                   initial="idle"
                   animate={enemyAnims[idx] || 'idle'}
-                  className={`flex items-center justify-center relative z-10 ${isBoss ? 'w-[clamp(18rem,26vw,26rem)] h-[clamp(22rem,46vh,34rem)]' : 'w-[clamp(12rem,16vw,18rem)] h-[clamp(16rem,34vh,22rem)]'}`}
+                  className={`flex items-center justify-center relative z-10 ${isBoss ? 'w-[clamp(18rem,26vw,26rem)] h-[clamp(22rem,46vh,34rem)]' : 'w-[clamp(14rem,20vw,20rem)] h-[clamp(18rem,40vh,26rem)]'}`}
                 >
                   {(enemyState.imagePrompt || enemyImageSrc) ? (
                     <GameImage
                       src={enemyImageSrc}
                       prompt={enemyImagePrompt}
                       fileKey={enemyImageObjectId}
-                      className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.12] sm:scale-[1.28] lg:scale-[1.5]' : 'scale-[1.08] sm:scale-[1.18] lg:scale-[1.35]'}`}
+                      className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.12] sm:scale-[1.28] lg:scale-[1.5]' : 'scale-[1.2] sm:scale-[1.34] lg:scale-[1.55]'}`}
                       alt={enemyState.name}
                       type="character"
                     />

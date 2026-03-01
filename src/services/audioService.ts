@@ -1,5 +1,6 @@
 import { Boss, RoomContentPayload, RunData, RunDataV2, isRunDataV2 } from '../../shared/types/game';
 import { getCurrentRunId } from './geminiService';
+import { GoogleGenAI, MusicGenerationMode } from '@google/genai';
 
 const audioCache = new Map<string, string>();
 const pendingRequests = new Map<string, Promise<string>>();
@@ -39,12 +40,21 @@ class RequestQueue {
 
 const apiQueue = new RequestQueue();
 
-const DEFAULT_BOSS_VOICE_ID = 'CwhRBWXzGAHq8TQ4Fs17';
+const DEFAULT_BOSS_VOICE_ID = 'zYcjlYFOd3taleS0gkk3';
 const DEFAULT_TTS_MODEL_ID = 'eleven_multilingual_v2';
 const MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
 const VOICES_CACHE_TTL_MS = 10 * 60 * 1000;
 const ELEVEN_SOUND_PROMPT_MAX_CHARS = 450;
-const MUSIC_PROMPT_PROFILE = 'atmo_v2';
+const MIN_SFX_PROMPT_WORDS = 6;
+const MAX_SFX_PROMPT_WORDS = 12;
+const MUSIC_PROMPT_PROFILE = 'gemini_lyria_v1';
+const GEMINI_MUSIC_MODEL = 'models/lyria-realtime-exp';
+const GEMINI_MUSIC_API_VERSION = 'v1alpha';
+const GEMINI_PCM_SAMPLE_RATE_HZ = 48000;
+const GEMINI_PCM_CHANNELS = 2;
+const GEMINI_PCM_BITS_PER_SAMPLE = 16;
+const GEMINI_MUSIC_SETUP_TIMEOUT_MS = 10000;
+const GEMINI_MUSIC_STREAM_TIMEOUT_MS = 30000;
 
 type SoundSource = 'card' | 'enemy' | 'boss' | 'generic';
 
@@ -110,6 +120,47 @@ let modelCatalogCache: { data: ElevenModel[]; expiresAt: number } | null = null;
 let voiceCatalogCache: { data: ElevenVoice[]; expiresAt: number } | null = null;
 let modelCatalogRequest: Promise<ElevenModel[]> | null = null;
 let voiceCatalogRequest: Promise<ElevenVoice[]> | null = null;
+let geminiMusicClient: GoogleGenAI | null = null;
+let geminiMusicClientApiKey: string | null = null;
+
+const SFX_GENERIC_OR_TECHNICAL_TOKENS = new Set([
+    'audio',
+    'sound',
+    'sounds',
+    'effect',
+    'effects',
+    'sfx',
+    'music',
+    'track',
+    'loop',
+    'looping',
+    'stereo',
+    'mono',
+    'mix',
+    'mixing',
+    'master',
+    'mastered',
+    'sample',
+    'quality',
+    'hq',
+    'epic',
+    'cinematic',
+    'dramatic',
+    'game',
+    'gameplay',
+    'roguelike',
+    'battle',
+    'background',
+    'ambient',
+    'bpm',
+    'db',
+    'eq',
+    'reverb',
+    'compressor',
+    'limiter',
+    'wav',
+    'mp3',
+]);
 
 function normalizeWhitespace(input: string): string {
     return input.replace(/\s+/g, ' ').trim();
@@ -142,6 +193,41 @@ function normalizeAudioFragment(input: string, fallback: string, maxWords: numbe
     const words = cleaned.split(' ');
     if (words.length <= maxWords) return cleaned;
     return words.slice(0, maxWords).join(' ');
+}
+
+function normalizeSfxToken(rawToken: string): string {
+    return rawToken
+        .toLowerCase()
+        .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+}
+
+function fallbackSfxSemanticPrompt(source: SoundSource): string {
+    if (source === 'card') return 'tempered steel slash through worn leather guard';
+    if (source === 'enemy') return 'rusted blade swipe across chained armor plate';
+    if (source === 'boss') return 'colossal iron hammer impact on cracked stone';
+    return 'heavy metal impact through layered cloth wrap';
+}
+
+function normalizeSfxSemanticPrompt(input: string, source: SoundSource): string {
+    const cleaned = normalizeWhitespace(input || '');
+    if (!cleaned) return fallbackSfxSemanticPrompt(source);
+
+    const filteredWords = cleaned
+        .split(' ')
+        .map(normalizeSfxToken)
+        .filter(token => token && !SFX_GENERIC_OR_TECHNICAL_TOKENS.has(token));
+
+    const dedupedWords: string[] = [];
+    for (const token of filteredWords) {
+        if (dedupedWords[dedupedWords.length - 1] !== token) dedupedWords.push(token);
+    }
+
+    const trimmedWords = dedupedWords.slice(0, MAX_SFX_PROMPT_WORDS);
+    if (trimmedWords.length < MIN_SFX_PROMPT_WORDS) {
+        return fallbackSfxSemanticPrompt(source);
+    }
+
+    return trimmedWords.join(' ');
 }
 
 function normalizeTheme(theme?: string): string {
@@ -190,6 +276,131 @@ function composeMusicPrompt(fragment: string, options: MusicOptions): string {
 
 function normalizeNarratorText(text: string): string {
     return normalizeAudioFragment(text, 'Your journey ends here.', 24);
+}
+
+function getGeminiMusicClient(apiKey: string): GoogleGenAI {
+    if (!geminiMusicClient || geminiMusicClientApiKey !== apiKey) {
+        geminiMusicClient = new GoogleGenAI({
+            apiKey,
+            apiVersion: GEMINI_MUSIC_API_VERSION,
+        });
+        geminiMusicClientApiKey = apiKey;
+    }
+    return geminiMusicClient;
+}
+
+function decodeBase64ToBytes(base64: string): Uint8Array {
+    const normalized = base64.replace(/-/g, '+').replace(/_/g, '/').replace(/\s/g, '');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function parseMimeNumericParam(mimeType: string | undefined, paramName: string): number | undefined {
+    if (!mimeType) return undefined;
+    const match = mimeType.match(new RegExp(`${paramName}=([0-9]+)`, 'i'));
+    if (!match?.[1]) return undefined;
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function parseSampleRateFromMimeType(mimeType: string | undefined): number {
+    return (
+        parseMimeNumericParam(mimeType, 'rate') ??
+        parseMimeNumericParam(mimeType, 'sample_rate') ??
+        parseMimeNumericParam(mimeType, 'samplerate') ??
+        GEMINI_PCM_SAMPLE_RATE_HZ
+    );
+}
+
+function parseChannelsFromMimeType(mimeType: string | undefined): number {
+    return (
+        parseMimeNumericParam(mimeType, 'channels') ??
+        GEMINI_PCM_CHANNELS
+    );
+}
+
+function estimatePcmTargetBytes(durationSeconds: number, sampleRate: number, channels: number): number {
+    const bytesPerSample = GEMINI_PCM_BITS_PER_SAMPLE / 8;
+    return Math.max(1, Math.floor(durationSeconds * sampleRate * channels * bytesPerSample));
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    const merged = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return merged;
+}
+
+function writeAscii(view: DataView, offset: number, value: string) {
+    for (let i = 0; i < value.length; i++) {
+        view.setUint8(offset + i, value.charCodeAt(i));
+    }
+}
+
+function pcm16ToWavBlob(pcmData: Uint8Array, sampleRate: number, channels: number): Blob {
+    const bytesPerSample = GEMINI_PCM_BITS_PER_SAMPLE / 8;
+    const blockAlign = channels * bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+
+    const header = new ArrayBuffer(44);
+    const view = new DataView(header);
+    writeAscii(view, 0, 'RIFF');
+    view.setUint32(4, 36 + pcmData.byteLength, true);
+    writeAscii(view, 8, 'WAVE');
+    writeAscii(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, channels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, GEMINI_PCM_BITS_PER_SAMPLE, true);
+    writeAscii(view, 36, 'data');
+    view.setUint32(40, pcmData.byteLength, true);
+
+    return new Blob([header, pcmData], { type: 'audio/wav' });
+}
+
+function buildGeminiMusicConfig(mode: MusicMode) {
+    if (mode === 'boss') {
+        return {
+            musicGenerationMode: MusicGenerationMode.QUALITY,
+            guidance: 4.1,
+            temperature: 0.95,
+            density: 0.72,
+            brightness: 0.34,
+            bpm: 120,
+        };
+    }
+
+    return {
+        musicGenerationMode: MusicGenerationMode.QUALITY,
+        guidance: 3.3,
+        temperature: 0.85,
+        density: 0.5,
+        brightness: 0.28,
+        bpm: 96,
+    };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutErrorMessage: string): Promise<T> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(timeoutErrorMessage)), timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+    }) as Promise<T>;
 }
 
 function getVoiceSettings(theme?: string): { stability: number; similarity_boost: number } {
@@ -529,9 +740,9 @@ async function tryLoadFromRunFile(cacheKey: string, fileNames: string | string[]
     return null;
 }
 
-async function persistRunFile(fileName: string, blob: Blob): Promise<void> {
+async function persistRunFile(fileName: string, blob: Blob): Promise<string | undefined> {
     const currentRunId = getCurrentRunId();
-    if (!currentRunId) return;
+    if (!currentRunId) return undefined;
 
     try {
         const base64Data = await new Promise<string>((resolve, reject) => {
@@ -541,7 +752,7 @@ async function persistRunFile(fileName: string, blob: Blob): Promise<void> {
             reader.readAsDataURL(blob);
         });
 
-        await fetch('/api/save-file', {
+        const response = await fetch('/api/save-file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -550,8 +761,23 @@ async function persistRunFile(fileName: string, blob: Blob): Promise<void> {
                 base64Data
             })
         });
+        if (!response.ok) {
+            throw new Error(`save-file failed with status ${response.status}`);
+        }
+
+        try {
+            const payload = await response.json();
+            if (payload?.path && typeof payload.path === 'string') {
+                return payload.path;
+            }
+        } catch {
+            // Fallback below.
+        }
+
+        return `/runs/${currentRunId}/${fileName}`;
     } catch (err) {
         console.error(`Failed to auto-save audio file (${fileName}) locally:`, err);
+        return undefined;
     }
 }
 
@@ -590,11 +816,157 @@ async function requestSoundGeneration(
     return response.blob();
 }
 
+async function requestGeminiMusicGeneration(
+    apiKey: string,
+    promptText: string,
+    mode: MusicMode
+): Promise<Blob> {
+    const targetDurationSeconds = mode === 'boss' ? 24 : 22;
+    const ai = getGeminiMusicClient(apiKey);
+    const audioChunks: Uint8Array[] = [];
+
+    let sampleRate = GEMINI_PCM_SAMPLE_RATE_HZ;
+    let channels = GEMINI_PCM_CHANNELS;
+    let totalBytes = 0;
+    let setupComplete = false;
+    let finished = false;
+    let sessionClosed = false;
+    let session: { setWeightedPrompts: (params: any) => Promise<void>; setMusicGenerationConfig: (params: any) => Promise<void>; play: () => void; close: () => void } | null = null;
+
+    let resolveSetup!: () => void;
+    let rejectSetup!: (reason?: unknown) => void;
+    const setupPromise = new Promise<void>((resolve, reject) => {
+        resolveSetup = resolve;
+        rejectSetup = reject;
+    });
+
+    let resolveFinished!: () => void;
+    let rejectFinished!: (reason?: unknown) => void;
+    const finishedPromise = new Promise<void>((resolve, reject) => {
+        resolveFinished = resolve;
+        rejectFinished = reject;
+    });
+
+    const closeSession = () => {
+        if (sessionClosed) return;
+        sessionClosed = true;
+        try {
+            session?.close();
+        } catch (err) {
+            console.warn('Failed to close Gemini music session cleanly:', err);
+        }
+    };
+
+    const finishSuccessfully = () => {
+        if (finished) return;
+        finished = true;
+        closeSession();
+        resolveFinished();
+    };
+
+    const failGeneration = (reason: unknown) => {
+        if (finished) return;
+        finished = true;
+        closeSession();
+        if (!setupComplete) {
+            rejectSetup(reason);
+        }
+        rejectFinished(reason);
+    };
+
+    try {
+        session = await ai.live.music.connect({
+            model: GEMINI_MUSIC_MODEL,
+            callbacks: {
+                onmessage: (message) => {
+                    if (message.setupComplete && !setupComplete) {
+                        setupComplete = true;
+                        resolveSetup();
+                    }
+
+                    if (message.filteredPrompt?.filteredReason) {
+                        failGeneration(new Error(`Gemini music prompt filtered: ${message.filteredPrompt.filteredReason}`));
+                        return;
+                    }
+
+                    const chunks = message.serverContent?.audioChunks || (message.audioChunk ? [message.audioChunk] : []);
+                    if (!chunks.length) return;
+
+                    for (const chunk of chunks) {
+                        if (!chunk?.data) continue;
+
+                        sampleRate = parseSampleRateFromMimeType(chunk.mimeType);
+                        channels = parseChannelsFromMimeType(chunk.mimeType);
+
+                        try {
+                            const decoded = decodeBase64ToBytes(chunk.data);
+                            if (!decoded.byteLength) continue;
+                            audioChunks.push(decoded);
+                            totalBytes += decoded.byteLength;
+                        } catch (decodeErr) {
+                            failGeneration(new Error(`Failed to decode Gemini music chunk: ${decodeErr instanceof Error ? decodeErr.message : String(decodeErr)}`));
+                            return;
+                        }
+                    }
+
+                    const targetBytes = estimatePcmTargetBytes(targetDurationSeconds, sampleRate, channels);
+                    if (totalBytes >= targetBytes) {
+                        finishSuccessfully();
+                    }
+                },
+                onerror: (event) => {
+                    failGeneration(event?.error || new Error('Gemini music websocket error'));
+                },
+                onclose: () => {
+                    if (!setupComplete) {
+                        failGeneration(new Error('Gemini music session closed before setup completed.'));
+                        return;
+                    }
+                    finishSuccessfully();
+                },
+            },
+        });
+
+        await withTimeout(
+            setupPromise,
+            GEMINI_MUSIC_SETUP_TIMEOUT_MS,
+            `Timed out waiting for Gemini music setup after ${GEMINI_MUSIC_SETUP_TIMEOUT_MS}ms.`
+        );
+
+        await session.setWeightedPrompts({
+            weightedPrompts: [{ text: promptText, weight: 1.0 }],
+        });
+        await session.setMusicGenerationConfig({
+            musicGenerationConfig: buildGeminiMusicConfig(mode),
+        });
+        session.play();
+
+        await withTimeout(
+            finishedPromise,
+            GEMINI_MUSIC_STREAM_TIMEOUT_MS,
+            `Timed out waiting for Gemini music audio stream after ${GEMINI_MUSIC_STREAM_TIMEOUT_MS}ms.`
+        );
+
+        const pcmData = concatUint8Arrays(audioChunks);
+        if (!pcmData.byteLength) {
+            throw new Error('Gemini music returned no audio data.');
+        }
+        return pcm16ToWavBlob(pcmData, sampleRate, channels);
+    } catch (err) {
+        closeSession();
+        throw err;
+    }
+}
+
 async function finalizeAudioRequest(cacheKey: string, fileName: string, blob: Blob): Promise<string> {
-    const url = URL.createObjectURL(blob);
-    audioCache.set(cacheKey, url);
-    await persistRunFile(fileName, blob);
-    return url;
+    const blobUrl = URL.createObjectURL(blob);
+    const persistedUrl = await persistRunFile(fileName, blob);
+    const resolvedUrl = persistedUrl || blobUrl;
+    audioCache.set(cacheKey, resolvedUrl);
+    if (persistedUrl) {
+        URL.revokeObjectURL(blobUrl);
+    }
+    return resolvedUrl;
 }
 
 function normalizeBossOptions(optionsOrTheme?: BossTTSOptions | string): BossTTSOptions {
@@ -605,8 +977,8 @@ function normalizeBossOptions(optionsOrTheme?: BossTTSOptions | string): BossTTS
 }
 
 export async function generateSoundEffect(prompt: string, options: SoundEffectOptions = {}): Promise<string> {
-    const normalizedPrompt = normalizeAudioFragment(prompt, 'arcane strike with metallic tail', 18);
     const source = options.source || 'generic';
+    const normalizedPrompt = normalizeSfxSemanticPrompt(prompt, source);
     const theme = normalizeTheme(options.theme);
     const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
     const cacheKey = `sfx:${source}:${theme}:${normalizedPrompt}${cacheTag}`;
@@ -675,30 +1047,29 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
     }
 
     const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
-    const fileName = `bgm_${mode}_${MUSIC_PROMPT_PROFILE}${tagged}_${toFileSafeKey(normalizedPrompt)}.mp3`;
+    const fileName = `bgm_${mode}_${MUSIC_PROMPT_PROFILE}${tagged}_${toFileSafeKey(normalizedPrompt)}.wav`;
     const legacyFileName = `bgm_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, [fileName, legacyFileName]);
     if (existing) {
         return existing;
     }
 
-    const apiKey = process.env.ELEVENLABS_API_KEY;
+    const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-        console.warn('ELEVENLABS_API_KEY is not set. Music generation skipped.');
+        console.warn('GEMINI_API_KEY is not set. Music generation skipped.');
         return '';
     }
 
     const templatedPrompt = composeMusicPrompt(normalizedPrompt, { ...options, mode, theme });
-    const durationSeconds = mode === 'boss' ? 24 : 22;
 
     const request = (async () => {
         try {
             let blob: Blob;
             try {
-                blob = await requestSoundGeneration(apiKey, templatedPrompt, durationSeconds, 0.5);
+                blob = await apiQueue.enqueue(() => requestGeminiMusicGeneration(apiKey, templatedPrompt, mode));
             } catch (templatedErr) {
-                console.warn('Templated BGM prompt failed, retrying with raw semantic prompt.', templatedErr);
-                blob = await requestSoundGeneration(apiKey, normalizedPrompt, durationSeconds, 0.38);
+                console.warn('Templated Gemini BGM prompt failed, retrying with raw semantic prompt.', templatedErr);
+                blob = await apiQueue.enqueue(() => requestGeminiMusicGeneration(apiKey, normalizedPrompt, mode));
             }
 
             return await finalizeAudioRequest(cacheKey, fileName, blob);
@@ -719,7 +1090,7 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
     const normalizedText = normalizeNarratorText(text);
     const theme = normalizeTheme(options.theme);
     const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
-    const cacheKey = `tts:${theme}:${normalizedText}:${options.voiceStyle || ''}:${options.voiceGender || ''}:${options.voiceAccent || ''}${cacheTag}`;
+    const cacheKey = `tts:${theme}:${DEFAULT_BOSS_VOICE_ID}:${normalizedText}:${options.voiceStyle || ''}:${options.voiceGender || ''}:${options.voiceAccent || ''}${cacheTag}`;
 
     if (audioCache.has(cacheKey)) {
         return audioCache.get(cacheKey)!;
@@ -730,7 +1101,7 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
     }
 
     const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
-    const fileName = `tts_boss${tagged}_${toFileSafeKey(normalizedText)}.mp3`;
+    const fileName = `tts_boss_${toFileSafeKey(DEFAULT_BOSS_VOICE_ID)}${tagged}_${toFileSafeKey(normalizedText)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, fileName);
     if (existing) {
         return existing;
@@ -744,18 +1115,10 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
 
     const request = (async () => {
         try {
-            const [models, voices] = await Promise.all([
-                loadModelCatalog(apiKey),
-                loadVoiceCatalog(apiKey),
-            ]);
+            const models = await loadModelCatalog(apiKey);
 
             const modelId = pickBestTTSModelId(models);
-            const voiceId = pickVoiceId(voices, {
-                theme,
-                style: options.voiceStyle || 'natural cinematic narrator',
-                gender: options.voiceGender,
-                accent: options.voiceAccent,
-            });
+            const voiceId = DEFAULT_BOSS_VOICE_ID;
 
             const response = await apiQueue.enqueue(() => fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
                 method: 'POST',

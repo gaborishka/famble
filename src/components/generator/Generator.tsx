@@ -170,7 +170,7 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [pastRuns, setPastRuns] = useState<{ runId: string, theme: string, timestamp: number }[]>([]);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
-  const [generationMode, setGenerationMode] = useState<GenerationMode>('fast_start');
+  const generationMode: GenerationMode = 'fast_start';
 
   React.useEffect(() => {
     fetch('/api/list-runs')
@@ -353,36 +353,6 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
         {error && (
           <div className="bg-red-500/10 border border-red-500/50 text-red-400 px-6 py-3 rounded-xl mb-8 max-w-md text-center">
             {error}
-          </div>
-        )}
-
-        {!forceLoadingPreview && (
-          <div className="mb-8 w-full max-w-2xl rounded-2xl border border-slate-700/70 bg-slate-900/55 p-4 sm:p-5">
-            <div className="text-sm uppercase tracking-wider text-slate-400 mb-3">Generation Settings</div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setGenerationMode('fast_start')}
-                className={`rounded-xl border px-4 py-3 text-left transition-colors ${generationMode === 'fast_start'
-                  ? 'border-orange-400 bg-orange-500/15 text-orange-100'
-                  : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
-                  }`}
-              >
-                <div className="font-semibold">Fast Start</div>
-                <div className="text-xs mt-1 text-slate-400">Build full run logic upfront, then aggressively prefetch room assets in background.</div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setGenerationMode('test_on_demand')}
-                className={`rounded-xl border px-4 py-3 text-left transition-colors ${generationMode === 'test_on_demand'
-                  ? 'border-sky-400 bg-sky-500/15 text-sky-100'
-                  : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
-                  }`}
-              >
-                <div className="font-semibold">Test On-Demand</div>
-                <div className="text-xs mt-1 text-slate-400">Build full run logic upfront, then prefetch assets only near the player path.</div>
-              </button>
-            </div>
           </div>
         )}
 

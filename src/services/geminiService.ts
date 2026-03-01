@@ -32,8 +32,26 @@ const RUN_DATA_MAX_ATTEMPTS = 3;
 let currentRunId = '';
 
 const GLOBAL_ROOM_ID = 'global';
-export const PLAYER_PORTRAIT_PROMPT = 'A character portrait of a rogue-like main character, dark hood mask, 2D vector art, close up';
+const ORIENTATION_DESCRIPTOR_PATTERNS = [
+  /\b(facing|looking)\s+(?:toward(?:s)?\s+)?(?:the\s+)?(?:left|right)\b/gi,
+  /\b(?:left|right)[-\s](?:facing|looking)\b/gi,
+  /\b(?:front|frontal|back|rear)\s+view\b/gi,
+  /\b(?:three[-\s]?quarter|3\/4)\s+view\b/gi,
+  /\b(?:left|right|side)\s+profile\b/gi,
+];
 const BATTLE_STAGE_FLOOR_PROMPT_RULE = 'Include one continuous, straight, horizontal battle platform at a fixed height across the full image width, around the lower third. This platform is the ground line where both player and ground enemies stand. Keep this ground level consistent across all rooms. Do not tilt, curve, split, or break the platform near the combat area. The region below the platform must stay visually readable with floor continuation, texture, reflections, or environment detail. Never render the lower area as a pure black strip, empty void, or heavy blackout gradient.';
+const CARD_IMAGE_PROMPT_RULE = 'Describe only the inner artwork scene for a card. No full card layout, no border or frame, no title ribbon, no badges, no mana gem, no UI, no letters, no numbers, no logo, and no watermark.';
+const ASSET_IMAGE_PROMPT_VERSION = 'card_art_v2';
+
+function normalizeCardAssetPrompt(prompt: string): string {
+  const base = (prompt || '').trim();
+  if (!base) return CARD_IMAGE_PROMPT_RULE;
+  const lower = base.toLowerCase();
+  if (lower.includes('inner artwork scene') || lower.includes('no full card layout')) {
+    return base;
+  }
+  return `${base}. ${CARD_IMAGE_PROMPT_RULE}`;
+}
 
 export function getCurrentRunId(): string {
   return currentRunId;
@@ -41,6 +59,7 @@ export function getCurrentRunId(): string {
 
 export function setCurrentRunId(id: string) {
   currentRunId = id;
+  syncImageCacheScope();
 }
 
 function toFileSafeKey(input: string): string {
@@ -59,16 +78,34 @@ function buildObjectFileKey(objectId: string): string {
   return toFileSafeKey(objectId).substring(0, 80);
 }
 
+function normalizeSpriteSubjectPrompt(subjectPrompt: string): string {
+  let normalized = (subjectPrompt || '').trim();
+  for (const pattern of ORIENTATION_DESCRIPTOR_PATTERNS) {
+    normalized = normalized.replace(pattern, ' ');
+  }
+  return normalized
+    .replace(/\s+/g, ' ')
+    .replace(/\s+,/g, ',')
+    .replace(/,\s*,+/g, ', ')
+    .replace(/^[,\s]+|[,\s]+$/g, '');
+}
+
+export function buildPlayerPortraitPrompt(theme: string): string {
+  return `A character portrait of the main protagonist in a ${theme} setting, close up, expressive face or mask, clean silhouette, 2D vector art, matching the same world style as enemies and battle background`;
+}
+
 export function buildPlayerSpritePrompt(theme: string): string {
-  return `A character sprite of a heroic protagonist, facing right, looking right, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), rogue-like main character, 2D vector art, ${theme} theme`;
+  return `A character sprite of the run protagonist in a ${theme} setting, matching the same world style as enemies and battle background, facing right, looking right, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), 2D vector art. Avoid unrelated genre costumes or props unless the ${theme} setting explicitly requires them.`;
 }
 
 export function buildEnemySpritePrompt(enemyPrompt: string): string {
-  return `A character sprite of ${enemyPrompt}, facing left, looking left, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
+  const normalizedEnemyPrompt = normalizeSpriteSubjectPrompt(enemyPrompt);
+  return `A character sprite of ${normalizedEnemyPrompt || 'a hostile combatant'}, STRICT ORIENTATION: face left only, looking left only, left-facing side profile only. Ignore any conflicting orientation words in the source description. Feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
 }
 
 export function buildBossSpritePrompt(bossPrompt: string): string {
-  return `A character sprite of ${bossPrompt}, facing left, looking left, side profile, feet or base touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as a normal character, huge imposing scale, 2D vector art`;
+  const normalizedBossPrompt = normalizeSpriteSubjectPrompt(bossPrompt);
+  return `A character sprite of ${normalizedBossPrompt || 'a massive boss enemy'}, STRICT ORIENTATION: face left only, looking left only, left-facing side profile only. Ignore any conflicting orientation words in the source description. Feet or base touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as a normal character, huge imposing scale, 2D vector art`;
 }
 
 function normalizeBattleBackgroundPrompt(prompt: string | undefined, theme: string): string {
@@ -544,7 +581,7 @@ async function requestMistralText(
 }
 
 export async function generateRunData(prompt: string, fileData?: { mimeType: string; data: string }, options?: { skipFileData?: boolean }): Promise<RunDataLegacy> {
-  currentRunId = Date.now().toString();
+  setCurrentRunId(Date.now().toString());
   const parts: any[] = [{ text: prompt }];
 
   if (fileData && !options?.skipFileData) {
@@ -566,6 +603,7 @@ Enemies do not use a deck of cards. Instead, their actions are dictated by a fix
 Intents can be simple (Attack, Defend, Buff, Debuff, Unknown) or combined (AttackDefend, AttackDebuff, AttackBuff). Use 'value' for the primary amount (e.g. damage), and 'secondaryValue' for the secondary effect (e.g. block amount or debuff stacks).
 For enemies, set 'isFlying' to true only for airborne units (flying, hovering, levitating, winged). Otherwise set it to false.
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
+Card imagePrompt rule: ${CARD_IMAGE_PROMPT_RULE}
 For audio fields, output ONLY the unique semantic fragment, not full production instructions.
   Audio fragment rules:
   - Keep fragments concrete and cinematic (specific source/action/material/emotion), avoid generic words like "epic sound effect".
@@ -601,7 +639,7 @@ Return the data strictly matching the provided JSON schema.`,
                 block: { type: Type.INTEGER },
                 magicNumber: { type: Type.INTEGER },
                 tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-                imagePrompt: { type: Type.STRING, description: 'A visual description of the card for image generation' },
+                imagePrompt: { type: Type.STRING, description: `A visual description of the card illustration for image generation. ${CARD_IMAGE_PROMPT_RULE}` },
                 audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for card SFX only. Example: "tempered steel slash through wet parchment". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' }
               },
               required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt']
@@ -620,7 +658,7 @@ Return the data strictly matching the provided JSON schema.`,
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
                 isFlying: { type: Type.BOOLEAN, description: 'True only if this enemy fights in the air (flying/hovering/levitating). False for ground enemies.' },
-                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
+                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: orientation must always be left-facing side profile only. Include "facing left, looking left, side profile" and never include facing right.' },
                 audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for enemy attack SFX only. Example: "rusted halberd whoosh with chain rattle". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
                 intents: {
                   type: Type.ARRAY,
@@ -647,7 +685,7 @@ Return the data strictly matching the provided JSON schema.`,
               maxHp: { type: Type.INTEGER },
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
+              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: orientation must always be left-facing side profile only. Include "facing left, looking left, side profile" and never include facing right.' },
               audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
               narratorText: { type: Type.STRING, description: 'A dramatic boss opening dialogue line for TTS, 6-20 words.' },
               narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority". Prefer natural human delivery unless explicitly synthetic.' },
@@ -716,6 +754,33 @@ Return the data strictly matching the provided JSON schema.`,
 
 const imageCache = new Map<string, string>();
 const pendingRequests = new Map<string, Promise<string>>();
+let imageCacheScope = '__no_run__';
+
+function syncImageCacheScope(): void {
+  const targetScope = currentRunId || '__no_run__';
+  if (imageCacheScope === targetScope) return;
+  imageCache.clear();
+  pendingRequests.clear();
+  imageCacheScope = targetScope;
+}
+
+function buildImageCacheKey(
+  prompt: string | undefined,
+  type: 'asset' | 'background' | 'character',
+  fileKey?: string
+): string | null {
+  if (!prompt && !fileKey) return null;
+  const normalizedPrompt = type === 'asset'
+    ? normalizeCardAssetPrompt(prompt || '')
+    : (prompt || '').trim();
+  const normalizedFileKey = fileKey
+    ? (type === 'asset' ? `${ASSET_IMAGE_PROMPT_VERSION}:${fileKey}` : fileKey)
+    : '';
+  const cacheIdentity = normalizedFileKey && normalizedPrompt
+    ? `${normalizedFileKey}|${normalizedPrompt}`
+    : (normalizedFileKey || normalizedPrompt);
+  return `${type}:${cacheIdentity}`;
+}
 
 /** Synchronous cache lookup — returns the cached URL if available, else null. */
 export function getCachedImageUrl(
@@ -723,15 +788,56 @@ export function getCachedImageUrl(
   type: 'asset' | 'background' | 'character' = 'asset',
   fileKey?: string
 ): string | null {
-  if (!prompt && !fileKey) return null;
-  const cacheKey = `${type}:${fileKey || prompt}`;
+  syncImageCacheScope();
+  const cacheKey = buildImageCacheKey(prompt, type, fileKey);
+  if (!cacheKey) return null;
   return imageCache.get(cacheKey) ?? null;
 }
 
 function buildImageFileName(type: 'asset' | 'background' | 'character', prompt: string, fileKey?: string): string {
-  if (fileKey) return `${type}_${toFileSafeKey(fileKey)}.png`;
-  const sanitizedPrompt = toFileSafeKey(prompt);
+  if (fileKey) {
+    const effectiveFileKey = type === 'asset' ? `${ASSET_IMAGE_PROMPT_VERSION}_${fileKey}` : fileKey;
+    return `${type}_${toFileSafeKey(effectiveFileKey)}.png`;
+  }
+  const effectivePrompt = type === 'asset' ? `${ASSET_IMAGE_PROMPT_VERSION}_${prompt}` : prompt;
+  const sanitizedPrompt = toFileSafeKey(effectivePrompt);
   return `${type}_${sanitizedPrompt}.png`;
+}
+
+function extractInlineImagePart(response: any): { mimeType?: string; data: string } | null {
+  const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+  for (const candidate of candidates) {
+    const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
+    for (const part of parts) {
+      const inlineData = part?.inlineData;
+      if (inlineData?.data) {
+        return { mimeType: inlineData.mimeType, data: inlineData.data };
+      }
+    }
+  }
+  return null;
+}
+
+function summarizeNoImageResponse(response: any): string {
+  const candidates = Array.isArray(response?.candidates) ? response.candidates : [];
+  if (candidates.length === 0) return 'no candidates in response';
+
+  const reasons = candidates
+    .map((candidate: any) => candidate?.finishReason)
+    .filter((reason: unknown): reason is string => typeof reason === 'string' && reason.length > 0);
+  if (reasons.length > 0) {
+    return `finish reasons: ${Array.from(new Set(reasons)).join(', ')}`;
+  }
+
+  const textSnippet = candidates
+    .flatMap((candidate: any) => (Array.isArray(candidate?.content?.parts) ? candidate.content.parts : []))
+    .map((part: any) => (typeof part?.text === 'string' ? part.text.trim() : ''))
+    .find((text: string) => text.length > 0);
+  if (textSnippet) {
+    return `text-only response: ${textSnippet.slice(0, 120)}`;
+  }
+
+  return 'model returned candidates without image parts';
 }
 
 export async function generateGameImage(
@@ -739,7 +845,12 @@ export async function generateGameImage(
   type: 'asset' | 'background' | 'character' = 'asset',
   fileKey?: string
 ): Promise<string> {
-  const cacheKey = `${type}:${fileKey || prompt}`;
+  syncImageCacheScope();
+  const effectivePrompt = type === 'asset' ? normalizeCardAssetPrompt(prompt) : prompt;
+  const cacheKey = buildImageCacheKey(effectivePrompt, type, fileKey);
+  if (!cacheKey) {
+    throw new Error('Cannot generate image without prompt or fileKey');
+  }
   if (imageCache.has(cacheKey)) {
     return imageCache.get(cacheKey)!;
   }
@@ -749,7 +860,7 @@ export async function generateGameImage(
   }
 
   if (currentRunId) {
-    const fileName = buildImageFileName(type, prompt, fileKey);
+    const fileName = buildImageFileName(type, effectivePrompt, fileKey);
     try {
       const res = await fetch(`/api/check-file?runId=${currentRunId}&fileName=${fileName}`);
       if (res.ok) {
@@ -764,7 +875,7 @@ export async function generateGameImage(
     }
   }
 
-  let prefix = "A 2D vector art style game asset, clean lines, flat colors, highly detailed, fantasy game UI element. ";
+  let prefix = "A 2D fantasy card illustration for an inner art panel, clean lines, flat colors, highly detailed, full-bleed composition. No frame, no border, no text, no UI elements. ";
   if (type === 'background') {
     prefix = `A 2D video game combat stage background, side-scrolling perspective, clean lines, flat colors, highly detailed. ${BATTLE_STAGE_FLOOR_PROMPT_RULE} `;
   } else if (type === 'character') {
@@ -776,7 +887,7 @@ export async function generateGameImage(
     contents: {
       parts: [
         {
-          text: `${prefix}${prompt}`,
+          text: `${prefix}${effectivePrompt}`,
         },
       ],
     },
@@ -787,56 +898,55 @@ export async function generateGameImage(
       },
     },
   }).then(async response => {
-    for (const part of response.candidates?.[0]?.content?.parts || []) {
-      if (part.inlineData) {
-        let url = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+    const imagePart = extractInlineImagePart(response);
+    if (!imagePart) {
+      throw new Error(`No image generated (${summarizeNoImageResponse(response)})`);
+    }
 
-        // Remove background for characters
-        if (type === 'character') {
-          try {
-            // imgly requires a blob or url, we convert the base64 data to blob
-            const blobResponse = await fetch(url);
-            const blob = await blobResponse.blob();
+    let url = `data:${imagePart.mimeType || 'image/png'};base64,${imagePart.data}`;
 
-            // process an image to remove background
-            const transparentBlob = await removeBackground(blob);
+    // Remove background for characters
+    if (type === 'character') {
+      try {
+        // imgly requires a blob or url, we convert the base64 data to blob
+        const blobResponse = await fetch(url);
+        const blob = await blobResponse.blob();
 
-            // convert it back to data URL for our frontend components
-            url = await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(transparentBlob);
-            });
-          } catch (err) {
-            console.error("Background removal failed, falling back to original image", err);
-          }
-        }
+        // process an image to remove background
+        const transparentBlob = await removeBackground(blob);
 
-        // Save image to local filesystem via dev server plugin
-        if (currentRunId) {
-          const fileName = buildImageFileName(type, prompt, fileKey);
-
-          fetch('/api/save-file', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              runId: currentRunId,
-              fileName,
-              base64Data: url
-            })
-          }).catch(err => console.error('Failed to auto-save image locally:', err));
-        }
-
-        imageCache.set(cacheKey, url);
-        pendingRequests.delete(cacheKey);
-        return url;
+        // convert it back to data URL for our frontend components
+        url = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(transparentBlob);
+        });
+      } catch (err) {
+        console.error("Background removal failed, falling back to original image", err);
       }
     }
+
+    // Save image to local filesystem via dev server plugin
+    if (currentRunId) {
+      const fileName = buildImageFileName(type, effectivePrompt, fileKey);
+
+      fetch('/api/save-file', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          runId: currentRunId,
+          fileName,
+          base64Data: url
+        })
+      }).catch(err => console.error('Failed to auto-save image locally:', err));
+    }
+
+    imageCache.set(cacheKey, url);
     pendingRequests.delete(cacheKey);
-    throw new Error("No image generated");
+    return url;
   }).catch(err => {
     pendingRequests.delete(cacheKey);
     throw err;
@@ -848,12 +958,13 @@ export async function generateGameImage(
 
 export async function preloadFirstCombatImages(runData: RunData): Promise<void> {
   const promises: Promise<string>[] = [];
+  const playerPortraitPrompt = buildPlayerPortraitPrompt(runData.theme);
 
   // Background
   promises.push(generateGameImage(buildDefaultBattleBackgroundPrompt(runData.theme), 'background').catch(e => { console.error('Failed to preload background', e); return ''; }));
 
   // Player portrait and sprite
-  promises.push(generateGameImage(PLAYER_PORTRAIT_PROMPT, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
+  promises.push(generateGameImage(playerPortraitPrompt, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
   promises.push(generateGameImage(buildPlayerSpritePrompt(runData.theme), 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
 
   // First enemy sprite
@@ -933,7 +1044,7 @@ const cardSchema = {
     block: { type: Type.INTEGER },
     magicNumber: { type: Type.INTEGER },
     tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-    imagePrompt: { type: Type.STRING },
+    imagePrompt: { type: Type.STRING, description: CARD_IMAGE_PROMPT_RULE },
     audioPrompt: { type: Type.STRING },
   },
   required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt'],
@@ -951,7 +1062,7 @@ const partialCardSchema = {
     block: { type: Type.INTEGER },
     magicNumber: { type: Type.INTEGER },
     tags: { type: Type.ARRAY, items: { type: Type.STRING } },
-    imagePrompt: { type: Type.STRING },
+    imagePrompt: { type: Type.STRING, description: CARD_IMAGE_PROMPT_RULE },
     audioPrompt: { type: Type.STRING },
   },
 };
@@ -1137,7 +1248,7 @@ function createStrikeCard(theme: string): Card {
     description: 'Deal 6 damage.',
     damage: 6,
     tags: ['Starter'],
-    imagePrompt: `A sharp basic sword slash on parchment, ${theme} fantasy card art`,
+    imagePrompt: `A sharp basic sword slash on parchment, ${theme} fantasy illustration`,
     audioPrompt: 'tempered steel slash through dry parchment',
   };
 }
@@ -1151,7 +1262,7 @@ function createDefendCard(theme: string): Card {
     description: 'Gain 5 Block.',
     block: 5,
     tags: ['Starter'],
-    imagePrompt: `A basic reinforced shield absorbing impact, ${theme} fantasy card art`,
+    imagePrompt: `A basic reinforced shield absorbing impact, ${theme} fantasy illustration`,
     audioPrompt: 'solid shield impact with muffled iron ring',
   };
 }
@@ -1185,6 +1296,20 @@ function stripCardMediaRefs(card: Card): Card {
     ...rest
   } = card;
   return rest;
+}
+
+function fillCardChoices(plannedCards: Card[], fallbackPool: Card[], targetCount = 3): Card[] {
+  const safeTarget = Math.max(1, targetCount);
+  const result = plannedCards.slice(0, safeTarget).map(card => ({ ...card }));
+  const source = fallbackPool.length > 0 ? fallbackPool : plannedCards;
+  if (source.length === 0) return result;
+
+  let cursor = 0;
+  while (result.length < safeTarget) {
+    result.push({ ...source[cursor % source.length] });
+    cursor += 1;
+  }
+  return result;
 }
 
 function capIntentDamage(intents: Intent[], maxDmg: number): Intent[] {
@@ -1310,6 +1435,39 @@ function mergeUniqueEnemies(existing: Enemy[], incoming: Enemy[]): Enemy[] {
     byId.set(enemy.id, mergeDefinedFields(prev, enemy));
   }
   return Array.from(byId.values());
+}
+
+function normalizeCardLookupKey(value: string | undefined): string {
+  return (value || '').trim().toLowerCase();
+}
+
+function resolveCardFromExistingPool(
+  pool: Card[],
+  hint: Partial<Card> | string | undefined,
+  fallback: Card
+): Card {
+  if (pool.length === 0) return { ...fallback };
+
+  if (typeof hint === 'string') {
+    const byId = pool.find(card => card.id === hint);
+    if (byId) return { ...byId };
+    const byName = pool.find(card => normalizeCardLookupKey(card.name) === normalizeCardLookupKey(hint));
+    if (byName) return { ...byName };
+    return { ...fallback };
+  }
+
+  if (isPlainObject(hint)) {
+    if (typeof hint.id === 'string') {
+      const byId = pool.find(card => card.id === hint.id);
+      if (byId) return { ...byId };
+    }
+    if (typeof hint.name === 'string') {
+      const byName = pool.find(card => normalizeCardLookupKey(card.name) === normalizeCardLookupKey(hint.name));
+      if (byName) return { ...byName };
+    }
+  }
+
+  return { ...fallback };
 }
 
 function canReuseManifestObjectId(
@@ -1609,10 +1767,100 @@ function syncPayloadCardRefs(payload: RoomContentPayload): RoomContentPayload {
   return payload;
 }
 
+function isTransientBlobUrl(url?: string): boolean {
+  return typeof url === 'string' && url.startsWith('blob:');
+}
+
+function sanitizePersistedUrl(url?: string): string | undefined {
+  return isTransientBlobUrl(url) ? undefined : url;
+}
+
+function sanitizeManifestEntryUrl(entry: GeneratedObjectManifestEntry): GeneratedObjectManifestEntry {
+  if (!isTransientBlobUrl(entry.url)) return entry;
+  return {
+    ...entry,
+    status: entry.status === 'ready' ? 'pending' : entry.status,
+    url: undefined,
+    updatedAt: nowTs(),
+  };
+}
+
+function sanitizeCardRuntimeUrls(card: Card): Card {
+  const imageUrl = sanitizePersistedUrl(card.imageUrl);
+  const audioUrl = sanitizePersistedUrl(card.audioUrl);
+  if (imageUrl === card.imageUrl && audioUrl === card.audioUrl) return card;
+  return {
+    ...card,
+    imageUrl,
+    audioUrl,
+  };
+}
+
+function sanitizeEnemyRuntimeUrls(enemy: Enemy): Enemy {
+  const imageUrl = sanitizePersistedUrl(enemy.imageUrl);
+  const audioUrl = sanitizePersistedUrl(enemy.audioUrl);
+  if (imageUrl === enemy.imageUrl && audioUrl === enemy.audioUrl) return enemy;
+  return {
+    ...enemy,
+    imageUrl,
+    audioUrl,
+  };
+}
+
+function sanitizeBossRuntimeUrls(boss: Boss): Boss {
+  const imageUrl = sanitizePersistedUrl(boss.imageUrl);
+  const audioUrl = sanitizePersistedUrl(boss.audioUrl);
+  const narratorAudioUrl = sanitizePersistedUrl(boss.narratorAudioUrl);
+  if (imageUrl === boss.imageUrl && audioUrl === boss.audioUrl && narratorAudioUrl === boss.narratorAudioUrl) return boss;
+  return {
+    ...boss,
+    imageUrl,
+    audioUrl,
+    narratorAudioUrl,
+  };
+}
+
+function sanitizeObjectUrls<T extends object | undefined>(urls: T): T {
+  if (!urls) return urls;
+  let changed = false;
+  const next: Record<string, unknown> = { ...(urls as Record<string, unknown>) };
+
+  Object.entries(urls as Record<string, unknown>).forEach(([key, value]) => {
+    if (typeof value === 'string') {
+      const sanitized = sanitizePersistedUrl(value);
+      if (sanitized !== value) {
+        changed = true;
+        next[key] = sanitized;
+      }
+      return;
+    }
+
+    if (Array.isArray(value)) {
+      let arrayChanged = false;
+      const sanitizedArray = value.map(item => {
+        if (typeof item !== 'string') return item;
+        const sanitized = sanitizePersistedUrl(item);
+        if (sanitized !== item) {
+          arrayChanged = true;
+        }
+        return sanitized;
+      });
+      if (arrayChanged) {
+        changed = true;
+        next[key] = sanitizedArray;
+      }
+    }
+  });
+
+  return (changed ? next : urls) as T;
+}
+
 export function repairRunDataCardMediaRefs(runData: RunData): RunData {
   if (!isRunDataV2(runData)) return runData;
 
-  const repairedManifest: Record<string, GeneratedObjectManifestEntry> = { ...runData.objectManifest };
+  const repairedManifest: Record<string, GeneratedObjectManifestEntry> = Object.fromEntries(
+    Object.entries(runData.objectManifest).map(([id, entry]) => [id, sanitizeManifestEntryUrl(entry)])
+  );
   const imagePromptByObjectId = new Map<string, string>();
   const audioPromptByObjectId = new Map<string, string>();
   Object.values(repairedManifest).forEach(entry => {
@@ -1624,7 +1872,7 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
   });
 
   const repairCard = (card: Card, roomIdHint?: string): Card => {
-    let nextCard = card;
+    let nextCard = sanitizeCardRuntimeUrls(card);
     const roomId = roomIdHint || getRoomIdFromObjectId(card.imageObjectId) || getRoomIdFromObjectId(card.audioObjectId) || GLOBAL_ROOM_ID;
 
     if (card.imageObjectId && card.imagePrompt) {
@@ -1650,7 +1898,7 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
           roomId,
           kind: 'image',
           prompt: card.imagePrompt,
-          url: card.imageUrl,
+          url: nextCard.imageUrl,
         });
       }
     }
@@ -1678,7 +1926,7 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
           roomId,
           kind: 'audio',
           prompt: card.audioPrompt,
-          url: card.audioUrl,
+          url: nextCard.audioUrl,
         });
       }
     }
@@ -1688,11 +1936,14 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
 
   const repairedCards = runData.cards.map(card => repairCard(card));
   const repairedStarterCards = runData.bootstrap.starterCards.map(card => repairCard(card)) as [Card, Card, Card];
+  const repairedEnemies = runData.enemies.map(enemy => sanitizeEnemyRuntimeUrls(enemy));
+  const repairedBoss = runData.boss ? sanitizeBossRuntimeUrls(runData.boss) : undefined;
   const repairedRooms: RunDataV2['rooms'] = Object.fromEntries(
     Object.entries(runData.rooms).map(([roomId, state]) => {
       if (!state.payload) return [roomId, state];
       const payload = state.payload;
       if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
+        const enemies = payload.enemies.map(enemy => sanitizeEnemyRuntimeUrls(enemy));
         const rewardCards = (payload.rewardCards || []).map(card => repairCard(card, roomId));
         return [
           roomId,
@@ -1700,8 +1951,27 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
             ...state,
             payload: syncPayloadCardRefs({
               ...payload,
+              enemies,
               rewardCards,
+              roomMusicUrl: sanitizePersistedUrl(payload.roomMusicUrl),
+              backgroundImageUrl: sanitizePersistedUrl(payload.backgroundImageUrl),
+              objectUrls: sanitizeObjectUrls(payload.objectUrls),
             }),
+          },
+        ];
+      }
+      if (payload.nodeType === 'Boss') {
+        return [
+          roomId,
+          {
+            ...state,
+            payload: {
+              ...payload,
+              boss: sanitizeBossRuntimeUrls(payload.boss),
+              bossMusicUrl: sanitizePersistedUrl(payload.bossMusicUrl),
+              backgroundImageUrl: sanitizePersistedUrl(payload.backgroundImageUrl),
+              objectUrls: sanitizeObjectUrls(payload.objectUrls),
+            },
           },
         ];
       }
@@ -1714,6 +1984,7 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
             payload: syncPayloadCardRefs({
               ...payload,
               shopCards,
+              objectUrls: sanitizeObjectUrls(payload.objectUrls),
             }),
           },
         ];
@@ -1737,18 +2008,31 @@ export function repairRunDataCardMediaRefs(runData: RunData): RunData {
             ...state,
             payload: syncPayloadCardRefs({
               ...payload,
+              imageUrl: sanitizePersistedUrl(payload.imageUrl),
               choices,
+              objectUrls: sanitizeObjectUrls(payload.objectUrls),
             }),
           },
         ];
       }
-      return [roomId, state];
+      return [
+        roomId,
+        {
+          ...state,
+          payload: {
+            ...payload,
+            objectUrls: sanitizeObjectUrls(payload.objectUrls),
+          },
+        },
+      ];
     })
   );
 
   return {
     ...runData,
     cards: repairedCards,
+    enemies: repairedEnemies,
+    boss: repairedBoss,
     bootstrap: {
       ...runData.bootstrap,
       starterCards: repairedStarterCards,
@@ -1762,6 +2046,7 @@ function ensureSharedPlayerImageRefs(
   objectManifest: Record<string, GeneratedObjectManifestEntry>,
   theme: string,
 ): { playerPortraitImageId: string; playerSpriteImageId: string } {
+  const playerPortraitPrompt = buildPlayerPortraitPrompt(theme);
   const playerSpritePrompt = buildPlayerSpritePrompt(theme);
   const entries = Object.values(objectManifest);
 
@@ -1769,7 +2054,7 @@ function ensureSharedPlayerImageRefs(
     entries.find(entry =>
       entry.kind === 'image'
       && entry.imageType === 'character'
-      && entry.prompt === PLAYER_PORTRAIT_PROMPT
+      && entry.prompt === playerPortraitPrompt
     )?.id || buildObjectId(GLOBAL_ROOM_ID, 'image', 'player_portrait');
 
   const playerSpriteImageId =
@@ -1783,7 +2068,7 @@ function ensureSharedPlayerImageRefs(
     id: playerPortraitImageId,
     roomId: GLOBAL_ROOM_ID,
     kind: 'image',
-    prompt: PLAYER_PORTRAIT_PROMPT,
+    prompt: playerPortraitPrompt,
     imageType: 'character',
     fileKey: buildObjectFileKey(playerPortraitImageId),
   });
@@ -1860,7 +2145,7 @@ function createFallbackSpecialCard(theme: string, index: number): Card {
     block: seed.block,
     magicNumber: seed.magicNumber,
     tags: seed.tags,
-    imagePrompt: `stylized fantasy card art for ${seed.name}, ${theme} theme`,
+    imagePrompt: `stylized fantasy illustration for ${seed.name}, ${theme} theme`,
     audioPrompt: seed.audioPrompt,
   };
 }
@@ -1871,7 +2156,7 @@ export async function generateRunBootstrap(
   settings: GenerationSettings = { mode: 'fast_start', prefetchDepth: 2 },
   options?: { skipFileData?: boolean },
 ): Promise<RunDataV2> {
-  currentRunId = Date.now().toString();
+  setCurrentRunId(Date.now().toString());
   const baseParts = buildRequestParts(prompt, fileData, options);
   const placeholderTheme = 'Dark Fantasy';
   const placeholderCards: Card[] = [
@@ -1913,12 +2198,13 @@ Rules:
 - Exactly 1 synergy in synergies[].
 - For enemies in rooms, refer to enemies[] using enemyIds.
 - Every room from provided map skeleton must have one entry in rooms[].
-- Combat: 1-2 enemyIds and up to 3 rewardCards.
-- Elite: exactly 1 enemyId and up to 3 rewardCards.
+- Combat: 1-2 enemyIds and exactly 3 rewardCards.
+- Elite: exactly 1 enemyId and exactly 3 rewardCards.
 - Boss: optional boss override + backgroundPrompt + bossMusicPrompt.
 - Event: include title, description, imagePrompt, footerText, and exactly 3 choices.
 - Shop: include exactly 3 shopCards.
 - Treasure and Campfire can use minimal fields.
+- For every card.imagePrompt, follow this rule: ${CARD_IMAGE_PROMPT_RULE}
 Audio rules:
 - audioPrompt fields are 4-14 words, physical action/material only, no technical audio terms.
   - roomMusicPrompt/bossMusicPrompt are 6-18 words, instrumentation/mood only, atmospheric and soft-edged (avoid harsh or brittle textures).
@@ -2138,19 +2424,26 @@ Audio rules:
     slot: string,
     fallback: Card,
   ): Card => {
+    void roomId;
+    void slot;
     if (typeof card === 'string' && cardsById.has(card)) {
       return { ...cardsById.get(card)! };
     }
     if (isPlainObject(card) && typeof card.id === 'string' && cardsById.has(card.id)) {
       return { ...cardsById.get(card.id)! };
     }
+    if (isPlainObject(card) && typeof card.name === 'string') {
+      const byName = cardsWithObjects.find(existing =>
+        normalizeCardLookupKey(existing.name) === normalizeCardLookupKey(card.name)
+      );
+      if (byName) {
+        return { ...byName };
+      }
+    }
     const normalizedInput = isPlainObject(card) ? (card as Partial<Card>) : undefined;
-    return registerCardObjects(
-      { objectManifest },
-      roomId,
-      normalizeCard(normalizedInput, fallback),
-      slot,
-    );
+    return normalizedInput
+      ? resolveCardFromExistingPool(nonStarterCards, normalizedInput, fallback)
+      : { ...fallback };
   };
 
   let encounterCounter = 0;
@@ -2198,16 +2491,14 @@ Audio rules:
       encounterCounter += 1;
 
       const rewardFallbackPool = nonStarterCards.length > 0 ? nonStarterCards : cardsWithObjects;
+      const rotatedRewardPool = rewardFallbackPool.map((_, idx) => (
+        rewardFallbackPool[(rewardCursor + idx) % rewardFallbackPool.length]
+      ));
       const plannedRewardCards = (plan?.rewardCards || []).slice(0, 3).map((card, idx) => {
         const fallback = rewardFallbackPool[(rewardCursor + idx) % rewardFallbackPool.length];
         return resolvePlanCard(node.id, card, `reward_${idx}`, fallback);
       });
-      const rewardCards = plannedRewardCards.length > 0
-        ? plannedRewardCards
-        : Array.from({ length: Math.min(3, rewardFallbackPool.length) }, (_, idx) => {
-          const fallback = rewardFallbackPool[(rewardCursor + idx) % rewardFallbackPool.length];
-          return { ...fallback };
-        });
+      const rewardCards = fillCardChoices(plannedRewardCards, rotatedRewardPool, 3);
       rewardCursor += 1;
 
       const backgroundPrompt = normalizeBattleBackgroundPrompt(plan?.backgroundPrompt, theme);
@@ -2451,13 +2742,14 @@ function getRoomPromptContext(runData: RunDataV2): string {
 async function generateCombatRoomPayload(runData: RunDataV2, node: MapNode): Promise<CombatRoomContent> {
   const config = {
     systemInstruction: `Generate content for a single roguelike combat room. Return strict JSON.
+Card imagePrompt rule: ${CARD_IMAGE_PROMPT_RULE}
 Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
         enemy: partialEnemySchema,
-        rewardCards: { type: Type.ARRAY, items: partialCardSchema, maxItems: 3 },
+        rewardCards: { type: Type.ARRAY, items: partialCardSchema, minItems: 3, maxItems: 3 },
         backgroundPrompt: { type: Type.STRING, description: `Scene prompt for combat background. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}` },
         roomMusicPrompt: { type: Type.STRING },
       },
@@ -2469,7 +2761,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     ? ' Elite enemies should have 35-55 HP and 8-12 attack damage.'
     : ' Normal enemies should have 20-35 HP and 5-9 attack damage.';
   const parts = [{
-    text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and up to 3 reward cards.${statGuidance} Enemy must include isFlying=true only if airborne, otherwise false. Background prompt must enforce one fixed horizontal ground platform for player and ground enemies.`
+    text: `Room type: ${node.type}. ${getRoomPromptContext(runData)} Generate an enemy and exactly 3 reward cards.${statGuidance} Enemy must include isFlying=true only if airborne, otherwise false. Background prompt must enforce one fixed horizontal ground platform for player and ground enemies.`
   }];
   try {
     const parsed = await requestStructuredJson<{
@@ -2508,20 +2800,18 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       });
     }
 
-    const fallbackReward = stripCardMediaRefs(runData.cards[2] || runData.cards[0]);
-    const rewardCardsRaw = (parsed.rewardCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
-      ...fallbackReward,
-      id: `${fallbackReward.id}_reward_${idx}`,
-    }));
-    const rewardCards = rewardCardsRaw.map((card, idx) => registerCardObjects(
-      manifestScope,
-      node.id,
-      card,
-      `reward_${idx}`
-    ));
-    const effectiveRewardCards = rewardCards.length > 0
-      ? rewardCards
-      : [registerCardObjects(manifestScope, node.id, fallbackReward, 'reward_fallback')];
+    const rewardFallbackPool = runData.cards
+      .filter(card => {
+        const normalizedName = card.name.trim().toLowerCase();
+        return normalizedName !== 'strike' && normalizedName !== 'defend';
+      });
+    const defaultFallbackReward = runData.cards[2] || runData.cards[0] || createFallbackSpecialCard(runData.theme, 0);
+    const effectiveRewardPool = rewardFallbackPool.length > 0 ? rewardFallbackPool : [defaultFallbackReward];
+    const plannedRewardCards = (parsed.rewardCards || []).slice(0, 3).map((cardHint, idx) => {
+      const fallback = effectiveRewardPool[idx % effectiveRewardPool.length];
+      return resolveCardFromExistingPool(effectiveRewardPool, cardHint, fallback);
+    });
+    const effectiveRewardCards = fillCardChoices(plannedRewardCards, effectiveRewardPool, 3).map(card => ({ ...card }));
 
     const roomMusicPrompt = parsed.roomMusicPrompt || runData.roomMusicPrompt;
     const backgroundPrompt = normalizeBattleBackgroundPrompt(parsed.backgroundPrompt, runData.theme);
@@ -2572,13 +2862,15 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const manifestScope = { objectManifest: runData.objectManifest };
     const fallbackEnemy = runData.enemies[0] || normalizeEnemy(undefined, runData.theme);
     const backgroundPrompt = buildDefaultBattleBackgroundPrompt(runData.theme);
-    const fallbackRewardCards = [stripCardMediaRefs(runData.cards[2] || runData.cards[0])].filter(Boolean);
-    const rewardCards = fallbackRewardCards.map((card, idx) => registerCardObjects(
-      manifestScope,
-      node.id,
-      card,
-      `fallback_reward_${idx}`
-    ));
+    const fallbackRewardPool = runData.cards
+      .filter(card => {
+        const normalizedName = card.name.trim().toLowerCase();
+        return normalizedName !== 'strike' && normalizedName !== 'defend';
+      });
+    const fallbackRewardSource = fallbackRewardPool.length > 0
+      ? fallbackRewardPool
+      : [runData.cards[2] || runData.cards[0] || createFallbackSpecialCard(runData.theme, 0)];
+    const rewardCards = fillCardChoices([], fallbackRewardSource, 3).map(card => ({ ...card }));
     let resolvedEnemy = fallbackEnemy;
     if (node.type === 'Elite') {
       const eliteHp = Math.min(65, Math.round(fallbackEnemy.maxHp * 1.4));
@@ -2767,6 +3059,7 @@ Narrator voice hints should default to natural human delivery unless synthetic t
 async function generateEventRoomPayload(runData: RunDataV2, node: MapNode): Promise<EventRoomContent> {
   const config = {
     systemInstruction: `Generate content for a single roguelike event room. Return strict JSON with exactly 3 choices.
+Card imagePrompt rule: ${CARD_IMAGE_PROMPT_RULE}
 Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
@@ -2833,7 +3126,11 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       imageType: 'background',
       fileKey: buildObjectFileKey(eventImageId),
     });
-    const fallbackCard = stripCardMediaRefs(runData.cards[2] || runData.cards[0] || createStrikeCard(runData.theme));
+    const fallbackCard = runData.cards[2] || runData.cards[0] || createStrikeCard(runData.theme);
+    const nonStarterPool = runData.cards.filter(card => {
+      const name = card.name.trim().toLowerCase();
+      return name !== 'strike' && name !== 'defend';
+    });
     const fallbackChoices: EventChoicePayload[] = [
       {
         id: 'event-heal',
@@ -2872,26 +3169,10 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       const addCardRaw = rawEffects.addCard && typeof rawEffects.addCard === 'object'
         ? rawEffects.addCard as Partial<Card>
         : undefined;
-      const fallbackAddCard = fallback.effects.addCard
-        ? { ...fallback.effects.addCard, id: `${fallback.effects.addCard.id}_event_${idx}` }
-        : undefined;
-      const resolvedAddCardSource = addCardRaw
-        ? normalizeCard(
-          addCardRaw,
-          fallbackAddCard || {
-            ...fallbackCard,
-            id: `${fallbackCard.id}_event_${idx}`,
-          }
-        )
-        : fallbackAddCard;
-      const addCard = resolvedAddCardSource
-        ? registerCardObjects(
-          { objectManifest: runData.objectManifest },
-          node.id,
-          resolvedAddCardSource,
-          addCardRaw ? `event_choice_${idx}` : `event_fallback_${idx}`
-        )
-        : undefined;
+      const fallbackAddCard = fallback.effects.addCard || fallbackCard;
+      const addCard = addCardRaw
+        ? resolveCardFromExistingPool(nonStarterPool, addCardRaw, fallbackAddCard)
+        : (fallbackAddCard ? { ...fallbackAddCard } : undefined);
 
       return {
         id: typeof raw.id === 'string' && raw.id.trim().length > 0 ? raw.id : fallback.id,
@@ -2939,9 +3220,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       fileKey: buildObjectFileKey(eventImageId),
     });
     const fallbackCard = runData.cards[2] || runData.cards[0];
-    const fallbackEventCard = fallbackCard
-      ? registerCardObjects({ objectManifest: runData.objectManifest }, node.id, fallbackCard, 'event_fallback')
-      : undefined;
+    const fallbackEventCard = fallbackCard ? { ...fallbackCard } : undefined;
     return {
       roomId: node.id,
       nodeType: 'Event',
@@ -2987,6 +3266,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
 async function generateShopRoomPayload(runData: RunDataV2, node: MapNode): Promise<ShopRoomContent> {
   const config = {
     systemInstruction: `Generate content for a single roguelike shop room. Return strict JSON with 3 shop cards.
+Card imagePrompt rule: ${CARD_IMAGE_PROMPT_RULE}
 Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
     responseMimeType: 'application/json',
     responseSchema: {
@@ -3004,20 +3284,16 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
   const parts = [{ text: `Room type: Shop. ${getRoomPromptContext(runData)} Create three purchasable cards.` }];
   try {
     const parsed = await requestStructuredJson<{ shopCards: Partial<Card>[] }>('generateShopRoomPayload', config, parts);
-    const fallback = stripCardMediaRefs(runData.cards[2] || runData.cards[0]);
-    const cardsRaw = (parsed.shopCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
-      ...fallback,
-      id: `${fallback.id}_shop_${idx}`,
-    }));
-    const cards = cardsRaw.map((card, idx) => registerCardObjects(
-      { objectManifest: runData.objectManifest },
-      node.id,
-      card,
-      `shop_${idx}`
-    ));
-    const effectiveShopCards = cards.length > 0
-      ? cards
-      : [registerCardObjects({ objectManifest: runData.objectManifest }, node.id, fallback, 'shop_fallback')];
+    const pool = runData.cards.filter(card => {
+      const n = card.name.trim().toLowerCase();
+      return n !== 'strike' && n !== 'defend';
+    });
+    const fallback = pool[0] || runData.cards[2] || runData.cards[0];
+    const planned = (parsed.shopCards || []).slice(0, 3).map((cardHint, idx) => {
+      const localFallback = pool[idx % (pool.length || 1)] || fallback;
+      return resolveCardFromExistingPool(pool.length > 0 ? pool : [fallback], cardHint, localFallback);
+    });
+    const effectiveShopCards = fillCardChoices(planned, pool.length > 0 ? pool : [fallback], 3).map(card => ({ ...card }));
     return {
       roomId: node.id,
       nodeType: 'Shop',
@@ -3033,12 +3309,8 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       const n = card.name.trim().toLowerCase();
       return n !== 'strike' && n !== 'defend';
     });
-    const cards = (fallbackPool.length > 0 ? fallbackPool : runData.cards)
-      .map(stripCardMediaRefs)
-      .slice(0, 3)
-      .map((card, idx) => (
-      registerCardObjects({ objectManifest: runData.objectManifest }, node.id, card, `shop_fallback_${idx}`)
-      ));
+    const cards = fillCardChoices([], fallbackPool.length > 0 ? fallbackPool : runData.cards, 3)
+      .map(card => ({ ...card }));
     return {
       roomId: node.id,
       nodeType: 'Shop',
@@ -3079,6 +3351,7 @@ export async function generateRoomContent(runData: RunDataV2, node: MapNode): Pr
 
 export async function preloadEssentialImages(runData: RunData | RunDataV2): Promise<void> {
   const theme = runData.theme;
+  const playerPortraitPrompt = buildPlayerPortraitPrompt(theme);
   const firstEnemy = runData.enemies[0];
   const imagePromises: Promise<void>[] = [];
 
@@ -3121,7 +3394,7 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
       }
     ));
     imagePromises.push(preloadImageWithManifest(
-      PLAYER_PORTRAIT_PROMPT,
+      playerPortraitPrompt,
       'character',
       refs?.playerPortraitImageId,
       (url) => {
@@ -3215,7 +3488,7 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
   } else {
     const cards = runData.cards.slice(0, 3);
     imagePromises.push(preloadImageWithManifest(buildDefaultBattleBackgroundPrompt(theme), 'background'));
-    imagePromises.push(preloadImageWithManifest(PLAYER_PORTRAIT_PROMPT, 'character'));
+    imagePromises.push(preloadImageWithManifest(playerPortraitPrompt, 'character'));
     imagePromises.push(preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character'));
     if (firstEnemy?.imagePrompt) {
       imagePromises.push(preloadImageWithManifest(buildEnemySpritePrompt(firstEnemy.imagePrompt), 'character', undefined, (url) => {
