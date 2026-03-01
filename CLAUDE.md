@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Famble is a Slay the Spire-style roguelike deckbuilder that generates unique game content from user input (URLs or PDFs). Built with React 19, TypeScript, Vite, and powered by Google Gemini API for content/image generation and ElevenLabs for audio synthesis.
+Famble is a Slay the Spire-style roguelike deckbuilder that generates unique game content from user input (URLs or PDFs). Built with React 19, TypeScript, Vite, and powered by Mistral for text generation/OCR, Google Gemini for image generation, and ElevenLabs for audio synthesis.
 
 ## Commands
 
@@ -18,31 +18,32 @@ There is no test framework configured.
 ## Environment Variables
 
 Set in `.env.local`:
-- `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) — Required for Gemini content and image generation
+- `MISTRAL_API_KEY` — Required for Mistral text generation and OCR
+- `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) — Required for Gemini image generation
 - `ELEVENLABS_API_KEY` — Optional, enables audio/music/TTS generation
 
-These are injected via `vite.config.ts` `define` and accessed as `process.env.GEMINI_API_KEY` / `process.env.ELEVENLABS_API_KEY` in client code.
+These are injected via `vite.config.ts` `define` and accessed as `process.env.MISTRAL_API_KEY` / `process.env.GEMINI_API_KEY` / `process.env.ELEVENLABS_API_KEY` in client code.
 
 ## Architecture
 
 ### Data Flow
 
 ```
-Generator (input) → Gemini generates RunData → App → RunManager (orchestration)
+Generator (input) → Mistral generates RunData → App → RunManager (orchestration)
 RunManager → NodeMap (navigation) → CombatArena (gameplay) → CardReward (post-combat)
 ```
 
-All game content (cards, enemies, boss, synergies, map) is generated in a single Gemini call and returned as `RunData`. The app is a single-page client-side React app with no router.
+Text game content is generated via Mistral calls and returned as `RunData`; images are generated with Gemini and audio with ElevenLabs. The app is a single-page client-side React app with no router.
 
 ### Key Directories
 
 - `shared/types/game.ts` — All game type definitions (Card, Enemy, Boss, GameState, Synergy, RunData). This is the source of truth for game data structures.
 - `src/engine/` — Pure logic for combat resolution: `combatEngine.ts` (turn flow), `cardResolver.ts` (card effects), `synergyEngine.ts` (tag threshold triggers), `deckManager.ts` (draw/shuffle), `enemyAI.ts` (intent selection)
-- `src/services/geminiService.ts` — Gemini API integration. Uses `gemini-3-flash-preview` for structured JSON generation and `gemini-2.5-flash-image` for image generation. Handles background removal for character sprites via `@imgly/background-removal`.
+- `src/services/geminiService.ts` — Orchestration service: uses Mistral for structured JSON/text generation and `gemini-2.5-flash-image` for image generation. Handles background removal for character sprites via `@imgly/background-removal`.
 - `src/services/audioService.ts` — ElevenLabs API integration with request queue (max 3 concurrent). Generates SFX, music, and boss TTS.
 - `src/components/combat/CombatArena.tsx` — Main combat screen. Largest component; manages game state, animations, audio, and UI.
 - `src/components/run/RunManager.tsx` — Run state orchestration (map → combat → reward → victory/defeat). Tracks player HP, deck, gold.
-- `src/components/generator/Generator.tsx` — Input UI for URL/text/file upload. Triggers Gemini generation and preloads assets before starting.
+- `src/components/generator/Generator.tsx` — Input UI for URL/text/file upload. Triggers text generation orchestration and preloads assets before starting.
 
 ### Combat System
 

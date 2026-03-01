@@ -15,6 +15,9 @@ View your app in AI Studio: https://ai.studio/apps/31d22697-2015-4e17-9141-8fb6c
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. Set model API keys in [.env.local](.env.local):
+   - `MISTRAL_API_KEY` for text generation and OCR
+   - `GEMINI_API_KEY` for image generation
+   - `ELEVENLABS_API_KEY` (optional) for audio/music/TTS
 3. Run the app:
    `npm run dev`

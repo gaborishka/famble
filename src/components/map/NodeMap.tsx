@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useLayoutEffect, useState, useCallback } from 'react';
+import React, { useMemo, useRef, useLayoutEffect, useEffect, useState, useCallback } from 'react';
 import { MapNode } from '../../../shared/types/game';
 import { motion } from 'motion/react';
 
@@ -85,13 +85,13 @@ const getIcon = (type: MapNode['type'], className?: string) => {
 
 const borderStyle = (type: MapNode['type']): string => {
   switch (type) {
-    case 'Combat': return 'border-slate-400/80';
-    case 'Event': return 'border-amber-500';
-    case 'Shop': return 'border-emerald-500';
-    case 'Treasure': return 'border-amber-500';
-    case 'Boss': return 'border-red-500';
-    case 'Elite': return 'border-fuchsia-500';
-    case 'Campfire': return 'border-orange-500';
+    case 'Combat': return 'border-slate-300';
+    case 'Event': return 'border-amber-400';
+    case 'Shop': return 'border-emerald-400';
+    case 'Treasure': return 'border-amber-400';
+    case 'Boss': return 'border-red-400';
+    case 'Elite': return 'border-fuchsia-400';
+    case 'Campfire': return 'border-orange-400';
   }
 };
 
@@ -123,25 +123,26 @@ const iconColor = (type: MapNode['type']): string => {
 
 const bgAvailable = (type: MapNode['type']): string => {
   switch (type) {
-    case 'Combat': return 'bg-slate-800';
-    case 'Event': return 'bg-orange-600/90';
-    case 'Shop': return 'bg-emerald-800/80';
-    case 'Treasure': return 'bg-amber-800/70';
-    case 'Boss': return 'bg-red-900/80';
-    case 'Elite': return 'bg-fuchsia-900/80';
-    case 'Campfire': return 'bg-orange-800/80';
+    case 'Combat': return 'bg-slate-700';
+    case 'Event': return 'bg-amber-900/90';
+    case 'Shop': return 'bg-emerald-900/90';
+    case 'Treasure': return 'bg-amber-900/80';
+    case 'Boss': return 'bg-red-900/90';
+    case 'Elite': return 'bg-fuchsia-900/90';
+    case 'Campfire': return 'bg-orange-900/90';
   }
 };
 
 const glowStyle = (type: MapNode['type']): React.CSSProperties => {
+  // Strong, unmissable glow for available nodes
   switch (type) {
-    case 'Boss': return { boxShadow: '0 0 28px 8px rgba(239,68,68,0.5), inset 0 0 12px rgba(239,68,68,0.15)' };
-    case 'Event': return { boxShadow: '0 0 18px 4px rgba(251,146,60,0.35)' };
-    case 'Shop': return { boxShadow: '0 0 18px 4px rgba(16,185,129,0.3)' };
-    case 'Treasure': return { boxShadow: '0 0 18px 4px rgba(245,158,11,0.3)' };
-    case 'Elite': return { boxShadow: '0 0 20px 6px rgba(217,70,239,0.4), inset 0 0 8px rgba(217,70,239,0.2)' };
-    case 'Campfire': return { boxShadow: '0 0 24px 6px rgba(249,115,22,0.4), inset 0 0 12px rgba(249,115,22,0.2)' };
-    default: return { boxShadow: '0 0 14px 3px rgba(148,163,184,0.2)' };
+    case 'Boss': return { boxShadow: '0 0 30px 10px rgba(239,68,68,0.6), 0 0 60px 20px rgba(239,68,68,0.2), inset 0 0 12px rgba(239,68,68,0.15)' };
+    case 'Event': return { boxShadow: '0 0 24px 8px rgba(251,146,60,0.5), 0 0 50px 16px rgba(251,146,60,0.15)' };
+    case 'Shop': return { boxShadow: '0 0 24px 8px rgba(16,185,129,0.5), 0 0 50px 16px rgba(16,185,129,0.15)' };
+    case 'Treasure': return { boxShadow: '0 0 24px 8px rgba(245,158,11,0.5), 0 0 50px 16px rgba(245,158,11,0.15)' };
+    case 'Elite': return { boxShadow: '0 0 26px 8px rgba(217,70,239,0.55), 0 0 50px 16px rgba(217,70,239,0.15), inset 0 0 8px rgba(217,70,239,0.2)' };
+    case 'Campfire': return { boxShadow: '0 0 26px 10px rgba(249,115,22,0.55), 0 0 50px 16px rgba(249,115,22,0.15), inset 0 0 12px rgba(249,115,22,0.2)' };
+    default: return { boxShadow: '0 0 24px 8px rgba(148,163,184,0.4), 0 0 50px 16px rgba(148,163,184,0.1)' };
   }
 };
 
@@ -178,9 +179,61 @@ export const NodeMap: React.FC<NodeMapProps> = ({
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
 
   const currentNode = nodes.find(n => n.id === currentNodeId);
-  const availableNodes = currentNode
-    ? currentNode.nextNodes
-    : nodes.filter(n => n.row === 0 || (n.row === undefined && n.y === 0)).map(n => n.id);
+
+  // Compute available nodes: after completing a node, its nextNodes become available
+  const availableNodes = useMemo(() => {
+    if (!currentNode) {
+      // No node selected yet — row 0 nodes are available
+      return nodes.filter(n => n.row === 0 || (n.row === undefined && n.y === 0)).map(n => n.id);
+    }
+    if (currentNode.completed) {
+      // Current node is done — show its next nodes as available
+      return currentNode.nextNodes;
+    }
+    // Current node is in-progress (shouldn't happen on map view, but safe fallback)
+    return [currentNode.id];
+  }, [currentNode, nodes]);
+  const availableNodeSet = useMemo(() => new Set(availableNodes), [availableNodes]);
+  const completedNodeSet = useMemo(
+    () => new Set(nodes.filter(node => node.completed).map(node => node.id)),
+    [nodes],
+  );
+  const hasStartedRun = completedNodeSet.size > 0;
+
+  // Visualized as the "player path" (already traversed edges).
+  const completedPathEdges = useMemo(() => {
+    const traversedEdges = new Set<string>();
+    nodes.forEach(node => {
+      if (!completedNodeSet.has(node.id)) return;
+      node.nextNodes.forEach(nextId => {
+        if (completedNodeSet.has(nextId)) {
+          traversedEdges.add(`${node.id}->${nextId}`);
+        }
+      });
+    });
+    return traversedEdges;
+  }, [nodes, completedNodeSet]);
+
+  // Visualized as immediate route options from the current node.
+  const frontierEdges = useMemo(() => {
+    const nextEdges = new Set<string>();
+    if (!currentNode || !currentNode.completed) return nextEdges;
+    currentNode.nextNodes.forEach(nextId => {
+      if (availableNodeSet.has(nextId)) {
+        nextEdges.add(`${currentNode.id}->${nextId}`);
+      }
+    });
+    return nextEdges;
+  }, [currentNode, availableNodeSet]);
+
+  const initialAvailableNodeId = useMemo(() => {
+    if (hasStartedRun) return null;
+    const firstStartNode = nodes.find(node => (
+      (node.row === 0 || (node.row === undefined && node.y === 0))
+      && availableNodeSet.has(node.id)
+    ));
+    return firstStartNode?.id || null;
+  }, [nodes, hasStartedRun, availableNodeSet]);
 
   // Group nodes by row
   const rows = useMemo(() => {
@@ -200,7 +253,7 @@ export const NodeMap: React.FC<NodeMapProps> = ({
     [rows],
   );
 
-  const rowGapClass = maxNodesInRow >= 6 ? 'gap-6 sm:gap-8 lg:gap-12' : 'gap-8 sm:gap-12 lg:gap-16';
+  const rowGapClass = maxNodesInRow >= 6 ? 'gap-5 sm:gap-7 lg:gap-10' : 'gap-6 sm:gap-9 lg:gap-12';
 
   // Current floor
   const currentFloor = useMemo(() => {
@@ -253,12 +306,12 @@ export const NodeMap: React.FC<NodeMapProps> = ({
     };
   }, [nodes, rows, measurePositions]);
 
-  // Adapt node size based on screen size for consistent native feel
+  // Adapt node size based on screen size
   const { NODE_SIZE, BOSS_SIZE } = useMemo(() => {
     const width = containerSize.width || (typeof window !== 'undefined' ? window.innerWidth : 960);
     const isMobile = width < 640;
-    const nodeSize = isMobile ? 68 : 88;
-    const bossSize = isMobile ? 96 : 124;
+    const nodeSize = isMobile ? 60 : 76;
+    const bossSize = isMobile ? 84 : 108;
     return { NODE_SIZE: nodeSize, BOSS_SIZE: bossSize };
   }, [containerSize.width]);
 
@@ -268,6 +321,21 @@ export const NodeMap: React.FC<NodeMapProps> = ({
   useLayoutEffect(() => {
     measurePositions();
   }, [measurePositions, NODE_SIZE, BOSS_SIZE]);
+
+  // Auto-scroll to show the available nodes area
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Find the first available node ref and scroll it into view
+    const targetId = availableNodes[0];
+    if (!targetId) return;
+    const el = nodeRefs.current[targetId];
+    if (!el || !scrollContainerRef.current) return;
+    // Small delay to let layout settle
+    const timer = setTimeout(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [availableNodes, nodes]);
 
   // Render connections (curved bezier paths)
   const connections = useMemo(() => {
@@ -279,8 +347,9 @@ export const NodeMap: React.FC<NodeMapProps> = ({
         if (!fromPos || !toPos) return;
 
         const target = nodes.find(n => n.id === nextId);
-        const isCompleted = node.completed && target?.completed;
-        const isAvailable = availableNodes.includes(nextId) && (currentNodeId === node.id || node.completed);
+        const edgeId = `${node.id}->${nextId}`;
+        const isCompletedPath = completedPathEdges.has(edgeId);
+        const isFrontier = frontierEdges.has(edgeId);
 
         const isBossTarget = target?.type === 'Boss';
         const fromHalf = node.type === 'Boss' ? BOSS_HALF : HALF;
@@ -292,57 +361,72 @@ export const NodeMap: React.FC<NodeMapProps> = ({
 
         const pathD = `M ${fromPos.x} ${fromY} C ${fromPos.x} ${midY}, ${toPos.x} ${midY}, ${toPos.x} ${toY}`;
 
+        const baseStroke = isCompletedPath ? '#2dd4bf' : isFrontier ? '#f8fafc' : '#334155';
+        const strokeWidth = isCompletedPath ? 4.8 : isFrontier ? 4.2 : 2.6;
+        const strokeOpacity = isCompletedPath ? 0.9 : isFrontier ? 0.92 : 0.38;
+
         lines.push(
-          <path
-            key={`${node.id}-${nextId}`}
-            d={pathD}
-            fill="none"
-            stroke={isCompleted ? '#475569' : isAvailable ? '#94a3b8' : '#33415599'}
-            strokeWidth={4.5}
-            strokeLinecap="round"
-          />
+          <g key={`${node.id}-${nextId}`}>
+            {(isCompletedPath || isFrontier) && (
+              <path
+                d={pathD}
+                fill="none"
+                stroke={isCompletedPath ? '#2dd4bf66' : '#e2e8f055'}
+                strokeWidth={isCompletedPath ? 9.5 : 8}
+                strokeLinecap="round"
+              />
+            )}
+            <path
+              d={pathD}
+              fill="none"
+              stroke={baseStroke}
+              strokeWidth={strokeWidth}
+              strokeOpacity={strokeOpacity}
+              strokeLinecap="round"
+            />
+          </g>
         );
       });
     });
     return lines;
-  }, [nodes, nodePositions, availableNodes, currentNodeId, HALF, BOSS_HALF]);
+  }, [nodes, nodePositions, completedPathEdges, frontierEdges, HALF, BOSS_HALF]);
 
   const hpPercent = Math.round((playerHp / playerMaxHp) * 100);
 
   return (
-    <div className="w-full min-h-screen bg-slate-950 flex flex-col items-center overflow-x-hidden overflow-y-auto">
+    <div ref={scrollContainerRef} className="w-full h-screen bg-slate-950 flex flex-col items-center overflow-x-hidden overflow-y-auto">
       {/* ── HUD Bar ── */}
-      <div className="w-full flex items-center justify-between px-4 sm:px-8 py-4 gap-6 shrink-0">
+      <div className="w-full flex items-center justify-between px-4 sm:px-8 py-3 gap-6 shrink-0 sticky top-0 bg-slate-950/95 backdrop-blur-sm z-30 border-b border-slate-800/50">
         {/* HP */}
         <div className="flex items-center gap-3">
-          <span className="text-base font-bold text-white tracking-wide">HP</span>
-          <div className="w-44 h-6 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
+          <span className="text-sm font-bold text-white tracking-wide">HP</span>
+          <div className="w-32 h-5 bg-slate-800 rounded-full overflow-hidden border border-slate-700">
             <div
               className="h-full bg-emerald-500 rounded-full transition-all duration-300"
               style={{ width: `${hpPercent}%` }}
             />
           </div>
-          <span className="text-base font-semibold text-white tabular-nums">{playerHp}/{playerMaxHp}</span>
+          <span className="text-sm font-semibold text-white tabular-nums">{playerHp}/{playerMaxHp}</span>
         </div>
         {/* Gold */}
         <div className="flex items-center gap-2">
-          <svg viewBox="0 0 20 20" className="w-6 h-6">
+          <svg viewBox="0 0 20 20" className="w-5 h-5">
             <circle cx="10" cy="10" r="9" fill="#facc15" stroke="#a16207" strokeWidth="1.5" />
             <text x="10" y="14.5" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#a16207" fontFamily="sans-serif">$</text>
           </svg>
-          <span className="text-base font-bold text-white tabular-nums">{gold}</span>
+          <span className="text-sm font-bold text-white tabular-nums">{gold}</span>
         </div>
         {/* Floor */}
-        <span className="text-base font-bold text-slate-300 tracking-wide">Floor {currentFloor}/{totalFloors}</span>
+        <span className="text-sm font-bold text-slate-300 tracking-wide">Floor {currentFloor}/{totalFloors}</span>
       </div>
 
       {/* ── Map + Legend ── */}
       <div className="flex-1 w-full flex flex-col lg:flex-row items-stretch justify-center min-h-0 px-3 sm:px-4 lg:px-6 pb-4 gap-4">
 
-        {/* Map Panel — native-feeling container with auto height and fixed gaps */}
+        {/* Map Panel — compact with reduced gaps */}
         <div
           ref={mapRef}
-          className="relative flex flex-col items-center flex-1 min-w-0 w-full max-w-[800px] gap-12 sm:gap-16 lg:gap-20 py-10 sm:py-16 lg:py-24"
+          className="relative flex flex-col items-center flex-1 min-w-0 w-full max-w-[750px] gap-8 sm:gap-12 lg:gap-14 py-8 sm:py-12 lg:py-16"
         >
           {/* SVG layer */}
           <svg className="absolute inset-0 w-full h-full pointer-events-none z-0" style={{ overflow: 'visible' }}>
@@ -369,60 +453,104 @@ export const NodeMap: React.FC<NodeMapProps> = ({
                     const isCompleted = node.completed;
                     const isBoss = node.type === 'Boss';
                     const size = isBoss ? BOSS_SIZE : NODE_SIZE;
+                    const isInitialAvailable = node.id === initialAvailableNodeId;
 
                     let containerClasses: string;
                     let iconClasses: string;
                     let style: React.CSSProperties = {};
+                    let borderWidth = 'border-2';
 
                     if (isCompleted) {
-                      containerClasses = `bg-slate-800/55 ${borderStyleDone()} opacity-70`;
-                      iconClasses = 'text-slate-400';
+                      // Visited — faded, muted border
+                      containerClasses = `bg-slate-800/50 ${borderStyleDone()} opacity-55`;
+                      iconClasses = 'text-slate-500';
                     } else if (isNodeAvailable) {
+                      // Can be selected — bright, glowing, thick border
                       containerClasses = `${bgAvailable(node.type)} ${borderStyle(node.type)} cursor-pointer`;
                       iconClasses = iconColor(node.type);
                       style = glowStyle(node.type);
+                      borderWidth = 'border-[3px]';
                     } else {
-                      containerClasses = `bg-slate-800/45 ${borderStyleMuted(node.type)} opacity-75 cursor-not-allowed`;
-                      iconClasses = 'text-slate-400/80';
+                      // Locked — dark, very muted
+                      containerClasses = `bg-slate-800/60 ${borderStyleMuted(node.type)} cursor-not-allowed`;
+                      iconClasses = iconColor(node.type);
+                      style = { opacity: 0.45 };
                     }
 
                     return (
-                      <motion.button
-                        key={node.id}
-                        ref={(el: HTMLButtonElement | null) => { nodeRefs.current[node.id] = el; }}
-                        className={`
-                          relative flex items-center justify-center rounded-full border-2 transition-all
-                          ${containerClasses}
-                          ${isCurrent ? 'ring-2 ring-orange-400 ring-offset-2 ring-offset-slate-950' : ''}
-                        `}
-                        style={{
-                          width: size,
-                          height: size,
-                          ...style,
-                        }}
-                        onClick={() => isNodeAvailable && onNodeSelect(node)}
-                        disabled={!isNodeAvailable}
-                        whileHover={isNodeAvailable && !isCompleted ? { scale: 1.08 } : {}}
-                        whileTap={isNodeAvailable && !isCompleted ? { scale: 0.94 } : {}}
-                      >
-                        {getIcon(
-                          node.type,
-                          `${isBoss ? 'w-[44%] h-[44%]' : 'w-[42%] h-[42%]'} ${iconClasses}`
+                      <div key={node.id} className="relative flex flex-col items-center">
+                        <motion.button
+                          ref={(el: HTMLButtonElement | null) => { nodeRefs.current[node.id] = el; }}
+                          className={`
+                            relative flex items-center justify-center rounded-full ${borderWidth} transition-all
+                            ${containerClasses}
+                          `}
+                          style={{
+                            width: size,
+                            height: size,
+                            ...style,
+                          }}
+                          onClick={() => isNodeAvailable && onNodeSelect(node)}
+                          disabled={!isNodeAvailable}
+                          whileHover={isNodeAvailable && !isCompleted ? { scale: 1.1 } : {}}
+                          whileTap={isNodeAvailable && !isCompleted ? { scale: 0.94 } : {}}
+                          animate={isNodeAvailable && !isCompleted ? {
+                            scale: [1, 1.05, 1],
+                          } : {}}
+                          transition={isNodeAvailable && !isCompleted ? {
+                            duration: 2,
+                            repeat: Infinity,
+                            ease: 'easeInOut',
+                          } : {}}
+                          aria-label={`${node.type} node ${isNodeAvailable ? '(available)' : isCompleted ? '(completed)' : '(locked)'}`}
+                        >
+                          {isNodeAvailable && !isCompleted && (
+                            <span className="absolute inset-[-5px] rounded-full border border-cyan-200/70 animate-pulse pointer-events-none" />
+                          )}
+                          {getIcon(
+                            node.type,
+                            `${isBoss ? 'w-[44%] h-[44%]' : 'w-[42%] h-[42%]'} ${iconClasses}`
+                          )}
+                        </motion.button>
+
+                        {isCompleted && (
+                          <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-teal-500 border border-teal-200 text-[11px] leading-none flex items-center justify-center text-slate-950 font-bold shadow-md shadow-teal-500/30">
+                            ✓
+                          </span>
                         )}
-                        {/* Orange pulse dot */}
-                        {isNodeAvailable && !isCompleted && (
-                          <span className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 bg-orange-400 rounded-full animate-pulse border-2 border-orange-300" />
+                        {!isCompleted && !isNodeAvailable && (
+                          <span className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-slate-800 border border-slate-600 text-[11px] leading-none flex items-center justify-center text-slate-300">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3 h-3">
+                              <rect x="5" y="11" width="14" height="10" rx="2" />
+                              <path d="M8 11V8a4 4 0 018 0v3" />
+                            </svg>
+                          </span>
                         )}
-                      </motion.button>
+
+                        {isInitialAvailable && (
+                          <div className="flex flex-col items-center mt-1.5">
+                            <span className="text-cyan-200 text-xs leading-none">▼</span>
+                            <span className="text-cyan-200 text-[11px] font-bold tracking-wider uppercase">Start Here</span>
+                          </div>
+                        )}
+
+                        {/* Current position marker — "▲ YOU" below the node */}
+                        {isCurrent && !isInitialAvailable && (
+                          <div className="flex flex-col items-center mt-1">
+                            <span className="text-orange-400 text-xs leading-none">▲</span>
+                            <span className="text-orange-400 text-[10px] font-bold tracking-wider">YOU</span>
+                          </div>
+                        )}
+                      </div>
                     );
                   })}
                 </div>
 
                 {/* Start indicator */}
                 {isStartRow && (
-                  <div className="flex flex-col items-center mt-4">
-                    <div className="w-3.5 h-3.5 bg-slate-500 rounded-full" />
-                    <span className="text-slate-500 text-sm mt-1 font-medium">Start</span>
+                  <div className="flex flex-col items-center mt-2">
+                    <div className="w-2.5 h-2.5 bg-slate-500 rounded-full" />
+                    <span className="text-slate-500 text-xs mt-0.5 font-medium">Start</span>
                   </div>
                 )}
               </div>
@@ -431,23 +559,54 @@ export const NodeMap: React.FC<NodeMapProps> = ({
         </div>
 
         {/* ── Legend ── */}
-        <div className="shrink-0 grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-1 gap-x-4 gap-y-3 lg:gap-6 px-1 sm:px-2 lg:pl-4 lg:pr-2 place-items-start content-center">
-          {([
-            ['Combat', CombatIcon, 'text-white'],
-            ['Event', EventIcon, 'text-amber-400'],
-            ['Elite', EliteIcon, 'text-fuchsia-400'],
-            ['Shop', ShopIcon, 'text-emerald-400'],
-            ['Campfire', CampfireIcon, 'text-orange-400'],
-            ['Treasure', TreasureIcon, 'text-amber-400'],
-            ['Boss', BossIcon, 'text-red-400'],
-          ] as const).map(([label, Icon, color]) => (
-            <div key={label} className="flex items-center gap-2.5 sm:gap-3">
-              <div className="w-7 h-7 sm:w-9 sm:h-9 flex items-center justify-center">
-                <Icon className={`w-6 h-6 sm:w-7 sm:h-7 ${color}`} />
-              </div>
-              <span className="text-sm sm:text-base text-slate-400 font-medium">{label}</span>
+        <div className="shrink-0 w-full lg:w-[240px] flex flex-col gap-3 lg:gap-4 px-1 sm:px-2 lg:pl-4 lg:pr-2 content-center">
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Node Type</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-x-3 gap-y-2 lg:gap-3 place-items-start">
+              {([
+                ['Combat', CombatIcon, 'text-white'],
+                ['Event', EventIcon, 'text-amber-400'],
+                ['Elite', EliteIcon, 'text-fuchsia-400'],
+                ['Shop', ShopIcon, 'text-emerald-400'],
+                ['Campfire', CampfireIcon, 'text-orange-400'],
+                ['Treasure', TreasureIcon, 'text-amber-400'],
+                ['Boss', BossIcon, 'text-red-400'],
+              ] as const).map(([label, Icon, color]) => (
+                <div key={label} className="flex items-center gap-2">
+                  <div className="w-6 h-6 sm:w-7 sm:h-7 flex items-center justify-center">
+                    <Icon className={`w-5 h-5 sm:w-6 sm:h-6 ${color}`} />
+                  </div>
+                  <span className="text-xs sm:text-sm text-slate-300 font-medium">{label}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-3">
+            <div className="text-[11px] uppercase tracking-wider text-slate-400 font-semibold mb-2">Path Status</div>
+            <div className="flex flex-col gap-2 text-xs sm:text-sm text-slate-300">
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full border border-cyan-200 bg-cyan-400/40 shadow-sm shadow-cyan-300/40" />
+                <span>Available node</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-teal-400/85" />
+                <span>Completed node</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-slate-700 border border-slate-500" />
+                <span>Locked node</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-1 rounded-full bg-teal-400" />
+                <span>Your route</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-8 h-1 rounded-full bg-slate-100" />
+                <span>Next possible path</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

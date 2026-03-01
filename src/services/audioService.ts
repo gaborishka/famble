@@ -43,6 +43,8 @@ const DEFAULT_BOSS_VOICE_ID = 'CwhRBWXzGAHq8TQ4Fs17';
 const DEFAULT_TTS_MODEL_ID = 'eleven_multilingual_v2';
 const MODELS_CACHE_TTL_MS = 10 * 60 * 1000;
 const VOICES_CACHE_TTL_MS = 10 * 60 * 1000;
+const ELEVEN_SOUND_PROMPT_MAX_CHARS = 450;
+const MUSIC_PROMPT_PROFILE = 'atmo_v2';
 
 type SoundSource = 'card' | 'enemy' | 'boss' | 'generic';
 
@@ -113,6 +115,27 @@ function normalizeWhitespace(input: string): string {
     return input.replace(/\s+/g, ' ').trim();
 }
 
+function clampSoundPromptText(input: string): { text: string; wasTruncated: boolean; originalLength: number } {
+    const normalized = normalizeWhitespace(input || '');
+    if (normalized.length <= ELEVEN_SOUND_PROMPT_MAX_CHARS) {
+        return {
+            text: normalized,
+            wasTruncated: false,
+            originalLength: normalized.length,
+        };
+    }
+
+    // Prefer to cut at a word boundary to keep the prompt semantically coherent.
+    const hardLimit = normalized.slice(0, ELEVEN_SOUND_PROMPT_MAX_CHARS);
+    const trimmedToWordBoundary = hardLimit.replace(/\s+\S*$/, '').trim();
+
+    return {
+        text: trimmedToWordBoundary || hardLimit.trim(),
+        wasTruncated: true,
+        originalLength: normalized.length,
+    };
+}
+
 function normalizeAudioFragment(input: string, fallback: string, maxWords: number): string {
     const cleaned = normalizeWhitespace(input || '');
     if (!cleaned) return fallback;
@@ -147,19 +170,21 @@ function composeSoundEffectPrompt(fragment: string, options: SoundEffectOptions)
 }
 
 function composeMusicPrompt(fragment: string, options: MusicOptions): string {
-    const unique = normalizeAudioFragment(fragment, 'tense strings and low percussion heartbeat', 22);
+    const unique = normalizeAudioFragment(fragment, 'hushed bowed strings with distant low drone', 22);
     const theme = normalizeTheme(options.theme);
     const mode = options.mode || 'room';
     const arc = mode === 'boss'
-        ? 'high-stakes escalation with menace and dramatic weight'
-        : 'steady low-intensity tension suitable for repeated combats';
+        ? 'menacing pressure with cinematic gravity and controlled intensity'
+        : 'brooding low-intensity tension with immersive atmosphere for repeated combats';
 
     return normalizeWhitespace(
-        `Instrumental seamless combat loop for a roguelike game. ` +
+        `Atmospheric instrumental combat loop for a roguelike game. ` +
         `Theme context: ${theme}. ` +
         `Musical motif: ${unique}. ` +
         `Emotional arc: ${arc}. ` +
-        `No vocals, no spoken words, moderate dynamics, keep peak loudness restrained, leave space for sound effects.`
+        `Tonal mix: warm low-mid focus, soft attack, diffuse reverb tail, distant felted percussion, and gentle high-frequency roll-off. ` +
+        `Avoid sharp plucks, brittle highs, aggressive cymbals, hard transients, or piercing lead textures. ` +
+        `No vocals, no spoken words, low-to-moderate dynamics, restrained peaks, smooth loop continuity, leave space for sound effects.`
     );
 }
 
@@ -171,16 +196,16 @@ function getVoiceSettings(theme?: string): { stability: number; similarity_boost
     const normalizedTheme = (theme || '').toLowerCase();
 
     if (normalizedTheme.includes('science')) {
-        return { stability: 0.45, similarity_boost: 0.72 };
+        return { stability: 0.38, similarity_boost: 0.86 };
     }
     if (normalizedTheme.includes('legal') || normalizedTheme.includes('court')) {
-        return { stability: 0.42, similarity_boost: 0.78 };
+        return { stability: 0.4, similarity_boost: 0.86 };
     }
     if (normalizedTheme.includes('horror')) {
-        return { stability: 0.32, similarity_boost: 0.82 };
+        return { stability: 0.34, similarity_boost: 0.88 };
     }
 
-    return { stability: 0.35, similarity_boost: 0.8 };
+    return { stability: 0.4, similarity_boost: 0.86 };
 }
 
 function selectDuration(source: SoundSource, cardType?: string): number {
@@ -291,19 +316,36 @@ function themeVoiceKeywords(theme?: string): string[] {
     const normalizedTheme = (theme || '').toLowerCase();
 
     if (normalizedTheme.includes('science')) {
-        return ['clinical', 'calm', 'cold', 'precise', 'neutral', 'measured'];
+        return ['measured', 'precise', 'clear', 'grounded', 'authoritative'];
     }
     if (normalizedTheme.includes('legal') || normalizedTheme.includes('court')) {
-        return ['authoritative', 'formal', 'deep', 'commanding', 'neutral'];
+        return ['authoritative', 'formal', 'deep', 'commanding', 'grounded'];
     }
     if (normalizedTheme.includes('cooking') || normalizedTheme.includes('kitchen')) {
         return ['warm', 'confident', 'charismatic', 'playful'];
     }
     if (normalizedTheme.includes('horror')) {
-        return ['dark', 'ominous', 'gravelly', 'haunting'];
+        return ['dark', 'ominous', 'cinematic', 'gravelly'];
     }
 
-    return ['dramatic', 'cinematic', 'commanding'];
+    return ['dramatic', 'cinematic', 'commanding', 'grounded'];
+}
+
+function styleRequestsSynthetic(style?: string): boolean {
+    const normalized = normalizeWhitespace((style || '').toLowerCase());
+    if (!normalized) return false;
+    return [
+        'robot',
+        'robotic',
+        'synthetic',
+        'electronic',
+        'distorted',
+        'mechanical',
+        'inhuman',
+        'android',
+        'cyborg',
+        'vocoder',
+    ].some(token => normalized.includes(token));
 }
 
 function normalizeVoiceBlob(voice: ElevenVoice): string {
@@ -316,7 +358,7 @@ function normalizeVoiceBlob(voice: ElevenVoice): string {
 
 function pickVoiceId(
     voices: ElevenVoice[],
-    hints: { theme?: string; style?: string; gender?: string; accent?: string; line?: string }
+    hints: { theme?: string; style?: string; gender?: string; accent?: string }
 ): string {
     if (voices.length === 0) return DEFAULT_BOSS_VOICE_ID;
 
@@ -324,8 +366,10 @@ function pickVoiceId(
         ...themeVoiceKeywords(hints.theme),
         ...tokenizeHints(hints.style || ''),
         ...tokenizeHints(hints.accent || ''),
-        ...tokenizeHints(hints.line || ''),
     ];
+    const wantsSynthetic = styleRequestsSynthetic(hints.style);
+    const naturalKeywords = ['natural', 'narrator', 'storyteller', 'clear', 'warm', 'cinematic', 'conversational', 'grounded'];
+    const syntheticKeywords = ['robot', 'robotic', 'synthetic', 'electronic', 'vocoder', 'inhuman', 'mechanical', 'distorted', 'cyborg', 'android'];
 
     const desiredGender = (hints.gender || '').toLowerCase();
     const desiredAccent = (hints.accent || '').toLowerCase();
@@ -340,6 +384,13 @@ function pickVoiceId(
 
         for (const keyword of keywords) {
             if (keyword && blob.includes(keyword)) score += 2;
+        }
+        for (const keyword of naturalKeywords) {
+            if (blob.includes(keyword)) score += 1;
+        }
+        for (const keyword of syntheticKeywords) {
+            if (!blob.includes(keyword)) continue;
+            score += wantsSynthetic ? 2 : -6;
         }
 
         if ((voice.category || '').toLowerCase() === 'premade') score += 4;
@@ -356,7 +407,7 @@ function pickVoiceId(
             if (blob.includes(desiredAccent)) score += 2;
         }
 
-        if ((voice.name || '').toLowerCase().includes('narrator')) score += 2;
+        if ((voice.name || '').toLowerCase().includes('narrator')) score += 3;
 
         return { voice, score };
     }).sort((a, b) => b.score - a.score);
@@ -510,6 +561,14 @@ async function requestSoundGeneration(
     durationSeconds: number,
     promptInfluence: number
 ): Promise<Blob> {
+    const normalizedPrompt = clampSoundPromptText(promptText);
+    if (normalizedPrompt.wasTruncated) {
+        console.warn(
+            `Sound-generation prompt exceeded ${ELEVEN_SOUND_PROMPT_MAX_CHARS} characters ` +
+            `(${normalizedPrompt.originalLength}). Truncating before ElevenLabs request.`
+        );
+    }
+
     const response = await apiQueue.enqueue(() => fetchWithTimeout('https://api.elevenlabs.io/v1/sound-generation', {
         method: 'POST',
         headers: {
@@ -517,7 +576,7 @@ async function requestSoundGeneration(
             'xi-api-key': apiKey,
         },
         body: JSON.stringify({
-            text: promptText,
+            text: normalizedPrompt.text,
             duration_seconds: durationSeconds,
             prompt_influence: promptInfluence,
         }),
@@ -601,11 +660,11 @@ export async function generateSoundEffect(prompt: string, options: SoundEffectOp
 }
 
 export async function generateMusic(prompt: string, options: MusicOptions = {}): Promise<string> {
-    const normalizedPrompt = normalizeAudioFragment(prompt, 'ominous strings over restrained percussion', 22);
+    const normalizedPrompt = normalizeAudioFragment(prompt, 'hushed strings over distant low drone', 22);
     const mode = options.mode || 'room';
     const theme = normalizeTheme(options.theme);
     const cacheTag = options.cacheTag ? `:${toFileSafeKey(options.cacheTag)}` : '';
-    const cacheKey = `music:${mode}:${theme}:${normalizedPrompt}${cacheTag}`;
+    const cacheKey = `music:${mode}:${theme}:${MUSIC_PROMPT_PROFILE}:${normalizedPrompt}${cacheTag}`;
 
     if (audioCache.has(cacheKey)) {
         return audioCache.get(cacheKey)!;
@@ -616,7 +675,7 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
     }
 
     const tagged = options.fileTag ? `_${toFileSafeKey(options.fileTag)}` : '';
-    const fileName = `bgm_${mode}${tagged}_${toFileSafeKey(normalizedPrompt)}.mp3`;
+    const fileName = `bgm_${mode}_${MUSIC_PROMPT_PROFILE}${tagged}_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const legacyFileName = `bgm_${toFileSafeKey(normalizedPrompt)}.mp3`;
     const existing = await tryLoadFromRunFile(cacheKey, [fileName, legacyFileName]);
     if (existing) {
@@ -630,15 +689,16 @@ export async function generateMusic(prompt: string, options: MusicOptions = {}):
     }
 
     const templatedPrompt = composeMusicPrompt(normalizedPrompt, { ...options, mode, theme });
+    const durationSeconds = mode === 'boss' ? 24 : 22;
 
     const request = (async () => {
         try {
             let blob: Blob;
             try {
-                blob = await requestSoundGeneration(apiKey, templatedPrompt, 15, 0.55);
+                blob = await requestSoundGeneration(apiKey, templatedPrompt, durationSeconds, 0.5);
             } catch (templatedErr) {
                 console.warn('Templated BGM prompt failed, retrying with raw semantic prompt.', templatedErr);
-                blob = await requestSoundGeneration(apiKey, normalizedPrompt, 15, 0.35);
+                blob = await requestSoundGeneration(apiKey, normalizedPrompt, durationSeconds, 0.38);
             }
 
             return await finalizeAudioRequest(cacheKey, fileName, blob);
@@ -692,10 +752,9 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
             const modelId = pickBestTTSModelId(models);
             const voiceId = pickVoiceId(voices, {
                 theme,
-                style: options.voiceStyle,
+                style: options.voiceStyle || 'natural cinematic narrator',
                 gender: options.voiceGender,
                 accent: options.voiceAccent,
-                line: normalizedText,
             });
 
             const response = await apiQueue.enqueue(() => fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -731,7 +790,7 @@ export async function generateBossTTS(text: string, optionsOrTheme?: BossTTSOpti
                     body: JSON.stringify({
                         text: normalizedText,
                         model_id: DEFAULT_TTS_MODEL_ID,
-                        voice_settings: { stability: 0.35, similarity_boost: 0.8 },
+                        voice_settings: getVoiceSettings(theme),
                     }),
                 }));
 
@@ -824,7 +883,9 @@ export async function preloadEssentialAudio(runData: RunData | RunDataV2): Promi
         maybeWarmUpElevenLabsCatalogs(apiKey);
     }
 
-    const cards = runData.cards.slice(0, 3);
+    const cards = isRunDataV2(runData)
+        ? (runData.bootstrap?.starterCards || runData.cards.slice(0, 3))
+        : runData.cards.slice(0, 3);
     const firstEnemy = runData.enemies[0];
     const firstNode = isRunDataV2(runData)
         ? runData.node_map.find(node => node.row === 0 && node.type === 'Combat') || runData.node_map.find(node => node.type === 'Combat')
@@ -881,8 +942,14 @@ export async function preloadEssentialAudio(runData: RunData | RunDataV2): Promi
         }
     };
 
-    if (runData.roomMusicPrompt) {
-        promises.push(preloadMusicWithState(runData.roomMusicPrompt, refs?.roomMusicId, 'room', (url) => {
+    const roomMusicPrompt = (
+        firstPayload && (firstPayload.nodeType === 'Combat' || firstPayload.nodeType === 'Elite')
+            ? firstPayload.roomMusicPrompt
+            : runData.roomMusicPrompt
+    ) || runData.roomMusicPrompt;
+
+    if (roomMusicPrompt) {
+        promises.push(preloadMusicWithState(roomMusicPrompt, refs?.roomMusicId, 'room', (url) => {
             if (firstPayload && (firstPayload.nodeType === 'Combat' || firstPayload.nodeType === 'Elite')) {
                 firstPayload.roomMusicUrl = url;
                 firstPayload.objectUrls = { ...(firstPayload.objectUrls || {}), roomMusicUrl: url };
@@ -906,23 +973,59 @@ export async function preloadEssentialAudio(runData: RunData | RunDataV2): Promi
         ));
     });
 
-    promises.push(preloadSfxWithState(
-        firstEnemy?.audioPrompt,
-        firstEnemy?.audioObjectId || refs?.enemySfxIds?.[0] || refs?.enemySfxId,
-        'enemy',
-        (url) => {
-            if (firstEnemy) firstEnemy.audioUrl = url;
-            if (firstPayload) {
-                const enemySfxUrls = [...(firstPayload.objectUrls?.enemySfxUrls || [])];
-                enemySfxUrls[0] = url;
-                firstPayload.objectUrls = {
-                    ...(firstPayload.objectUrls || {}),
-                    enemySfxUrl: url,
-                    enemySfxUrls,
-                };
+    if (firstPayload && (firstPayload.nodeType === 'Combat' || firstPayload.nodeType === 'Elite')) {
+        firstPayload.enemies.forEach((enemy, idx) => {
+            promises.push(preloadSfxWithState(
+                enemy.audioPrompt,
+                enemy.audioObjectId || refs?.enemySfxIds?.[idx] || refs?.enemySfxId,
+                firstPayload.nodeType === 'Elite' ? 'boss' : 'enemy',
+                (url) => {
+                    enemy.audioUrl = url;
+                    const enemySfxUrls = [...(firstPayload.objectUrls?.enemySfxUrls || [])];
+                    enemySfxUrls[idx] = url;
+                    firstPayload.objectUrls = {
+                        ...(firstPayload.objectUrls || {}),
+                        enemySfxUrl: idx === 0 ? url : firstPayload.objectUrls?.enemySfxUrl,
+                        enemySfxUrls,
+                    };
+                }
+            ));
+        });
+
+        (firstPayload.rewardCards || []).forEach((card, idx) => {
+            promises.push(preloadSfxWithState(
+                card.audioPrompt,
+                card.audioObjectId || firstPayload.objectRefs?.cardSfxIds?.[idx],
+                'card',
+                (url) => {
+                    card.audioUrl = url;
+                    const cardSfxUrls = [...(firstPayload.objectUrls?.cardSfxUrls || [])];
+                    const offset = cards.length + idx;
+                    cardSfxUrls[offset] = url;
+                    firstPayload.objectUrls = { ...(firstPayload.objectUrls || {}), cardSfxUrls };
+                }
+            ));
+        });
+    } else if (firstPayload && firstPayload.nodeType === 'Boss') {
+        promises.push(preloadSfxWithState(
+            firstPayload.boss.audioPrompt,
+            firstPayload.boss.audioObjectId || refs?.bossSfxId,
+            'boss',
+            (url) => {
+                firstPayload.boss.audioUrl = url;
+                firstPayload.objectUrls = { ...(firstPayload.objectUrls || {}), bossSfxUrl: url };
             }
-        }
-    ));
+        ));
+    } else {
+        promises.push(preloadSfxWithState(
+            firstEnemy?.audioPrompt,
+            firstEnemy?.audioObjectId || refs?.enemySfxIds?.[0] || refs?.enemySfxId,
+            'enemy',
+            (url) => {
+                if (firstEnemy) firstEnemy.audioUrl = url;
+            }
+        ));
+    }
 
     await Promise.all(promises);
 }

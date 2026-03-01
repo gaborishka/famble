@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, GenerateContentResponse } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import {
   Boss,
   Card,
@@ -26,7 +26,7 @@ import { removeBackground } from '@imgly/background-removal';
 import { generateFallbackNodeMap } from '../engine/mapGenerator';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-const RUN_DATA_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash'] as const;
+const TEXT_MODELS = ['mistral-large-latest', 'mistral-small-latest'] as const;
 const RUN_DATA_MAX_ATTEMPTS = 3;
 
 let currentRunId = '';
@@ -191,6 +191,358 @@ function errorToMessage(err: unknown): string {
   return String(err);
 }
 
+type JsonSchemaLike = {
+  type?: string | string[];
+  properties?: Record<string, JsonSchemaLike>;
+  items?: JsonSchemaLike;
+  required?: string[];
+  minItems?: number;
+  maxItems?: number;
+  additionalProperties?: boolean | JsonSchemaLike;
+  description?: string;
+  enum?: unknown[];
+  oneOf?: JsonSchemaLike[];
+  anyOf?: JsonSchemaLike[];
+  allOf?: JsonSchemaLike[];
+  [key: string]: unknown;
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getSchemaRequiredKeys(schema: JsonSchemaLike | undefined): string[] {
+  if (!schema || !Array.isArray(schema.required)) return [];
+  return schema.required.filter((key): key is string => typeof key === 'string');
+}
+
+function normalizeSchemaType(type: unknown): string {
+  return typeof type === 'string' ? type.toUpperCase() : '';
+}
+
+function normalizeSchemaTypeForMistral(type: unknown): string | undefined {
+  if (typeof type !== 'string') return undefined;
+  const normalized = type.toLowerCase();
+  switch (normalized) {
+    case 'object':
+    case 'array':
+    case 'string':
+    case 'integer':
+    case 'number':
+    case 'boolean':
+    case 'null':
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
+function toMistralJsonSchema(schema: JsonSchemaLike | undefined): Record<string, unknown> | null {
+  if (!isPlainObject(schema)) return null;
+
+  const converted: Record<string, unknown> = {};
+  const normalizedType = normalizeSchemaTypeForMistral(schema.type);
+  if (normalizedType) {
+    converted.type = normalizedType;
+  } else if (Array.isArray(schema.type)) {
+    const typeList = schema.type
+      .map(entry => normalizeSchemaTypeForMistral(entry))
+      .filter((entry): entry is string => Boolean(entry));
+    if (typeList.length > 0) {
+      converted.type = typeList;
+    }
+  }
+
+  if (isPlainObject(schema.properties)) {
+    const props: Record<string, Record<string, unknown>> = {};
+    Object.entries(schema.properties).forEach(([key, childSchema]) => {
+      const convertedChild = toMistralJsonSchema(childSchema);
+      if (convertedChild) props[key] = convertedChild;
+    });
+    converted.properties = props;
+  }
+
+  if (schema.items !== undefined) {
+    const convertedItems = toMistralJsonSchema(schema.items);
+    if (convertedItems) converted.items = convertedItems;
+  }
+
+  if (Array.isArray(schema.required)) {
+    converted.required = schema.required.filter((key): key is string => typeof key === 'string');
+  }
+  if (typeof schema.minItems === 'number') converted.minItems = schema.minItems;
+  if (typeof schema.maxItems === 'number') converted.maxItems = schema.maxItems;
+
+  if (typeof schema.additionalProperties === 'boolean') {
+    converted.additionalProperties = schema.additionalProperties;
+  } else if (isPlainObject(schema.additionalProperties)) {
+    const convertedAdditional = toMistralJsonSchema(schema.additionalProperties);
+    if (convertedAdditional) converted.additionalProperties = convertedAdditional;
+  }
+
+  (['description', 'title', 'default', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'minLength', 'maxLength', 'pattern', 'format', 'const', 'minProperties', 'maxProperties'] as const)
+    .forEach((key) => {
+      if (schema[key] !== undefined) converted[key] = schema[key];
+    });
+
+  if (Array.isArray(schema.enum)) converted.enum = schema.enum;
+
+  (['oneOf', 'anyOf', 'allOf'] as const).forEach((key) => {
+    if (!Array.isArray(schema[key])) return;
+    const convertedVariants = (schema[key] as JsonSchemaLike[])
+      .map(entry => toMistralJsonSchema(entry))
+      .filter((entry): entry is Record<string, unknown> => Boolean(entry));
+    if (convertedVariants.length > 0) converted[key] = convertedVariants;
+  });
+
+  if (!converted.type && converted.properties) {
+    converted.type = 'object';
+  }
+  return converted;
+}
+
+function buildMistralResponseFormat(
+  label: string,
+  schema: JsonSchemaLike | undefined,
+): Record<string, unknown> {
+  const convertedSchema = toMistralJsonSchema(schema);
+  if (!convertedSchema) {
+    return { type: 'json_object' };
+  }
+  const schemaName = toFileSafeKey(`${label}_schema`) || 'structured_output';
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: schemaName,
+      strict: true,
+      schema: convertedSchema,
+    },
+  };
+}
+
+function countRequiredHits(value: unknown, requiredKeys: string[]): number {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return 0;
+  const obj = value as Record<string, unknown>;
+  return requiredKeys.reduce((count, key) => count + (Object.prototype.hasOwnProperty.call(obj, key) ? 1 : 0), 0);
+}
+
+function normalizeParsedCandidateForSchema(candidate: unknown, schema: JsonSchemaLike | undefined): unknown {
+  const requiredKeys = getSchemaRequiredKeys(schema);
+  if (requiredKeys.length === 0) return candidate;
+  if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return candidate;
+
+  const root = candidate as Record<string, unknown>;
+  const wrapperKeys = ['data', 'result', 'output', 'response', 'payload', 'content', 'json'];
+  const candidates: unknown[] = [candidate];
+
+  wrapperKeys.forEach((key) => {
+    if (root[key] !== undefined) candidates.push(root[key]);
+  });
+  Object.values(root).forEach((value) => {
+    if (typeof value === 'object' && value !== null) candidates.push(value);
+  });
+
+  let best: unknown = candidate;
+  let bestScore = countRequiredHits(candidate, requiredKeys);
+  candidates.forEach((next) => {
+    const score = countRequiredHits(next, requiredKeys);
+    if (score > bestScore) {
+      best = next;
+      bestScore = score;
+    }
+  });
+
+  return best;
+}
+
+function buildSchemaPromptGuidance(schema: JsonSchemaLike | undefined): string {
+  if (!schema) return 'Return a valid JSON object only.';
+  const keys = Object.keys(schema.properties || {});
+  const required = getSchemaRequiredKeys(schema);
+  const lines = [
+    'Return ONLY one JSON object (no markdown, no explanation).',
+    'Do not wrap the object inside data/result/output/response/payload keys.',
+  ];
+  if (keys.length > 0) {
+    lines.push(`Top-level keys: ${keys.join(', ')}.`);
+  }
+  if (required.length > 0) {
+    lines.push(`Required top-level keys: ${required.join(', ')}.`);
+  }
+  return lines.join(' ');
+}
+
+function validateAgainstSchema(
+  value: unknown,
+  schema: JsonSchemaLike | undefined,
+  path: string,
+  errors: string[],
+): void {
+  if (!schema || errors.length >= 8) return;
+  const type = normalizeSchemaType(schema.type);
+  if (!type) return;
+
+  if (type === 'OBJECT') {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      errors.push(`${path} must be an object`);
+      return;
+    }
+    const obj = value as Record<string, unknown>;
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    required.forEach((key) => {
+      if (!(key in obj)) {
+        errors.push(`${path}.${key} is required`);
+      }
+    });
+
+    const props = schema.properties || {};
+    Object.entries(props).forEach(([key, childSchema]) => {
+      if (obj[key] !== undefined) {
+        validateAgainstSchema(obj[key], childSchema, `${path}.${key}`, errors);
+      }
+    });
+
+    if (schema.additionalProperties === false) {
+      Object.keys(obj).forEach((key) => {
+        if (!(key in props)) {
+          errors.push(`${path}.${key} is not allowed`);
+        }
+      });
+    }
+    return;
+  }
+
+  if (type === 'ARRAY') {
+    if (!Array.isArray(value)) {
+      errors.push(`${path} must be an array`);
+      return;
+    }
+    if (typeof schema.minItems === 'number' && value.length < schema.minItems) {
+      errors.push(`${path} must have at least ${schema.minItems} items`);
+    }
+    if (typeof schema.maxItems === 'number' && value.length > schema.maxItems) {
+      errors.push(`${path} must have at most ${schema.maxItems} items`);
+    }
+    value.forEach((entry, idx) => {
+      validateAgainstSchema(entry, schema.items, `${path}[${idx}]`, errors);
+    });
+    return;
+  }
+
+  if (type === 'STRING') {
+    if (typeof value !== 'string') errors.push(`${path} must be a string`);
+    return;
+  }
+  if (type === 'INTEGER') {
+    if (!Number.isInteger(value)) errors.push(`${path} must be an integer`);
+    return;
+  }
+  if (type === 'NUMBER') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) errors.push(`${path} must be a number`);
+    return;
+  }
+  if (type === 'BOOLEAN') {
+    if (typeof value !== 'boolean') errors.push(`${path} must be a boolean`);
+    return;
+  }
+  if (type === 'NULL') {
+    if (value !== null) errors.push(`${path} must be null`);
+  }
+}
+
+function validateSchemaOrError(candidate: unknown, schema: JsonSchemaLike | undefined): string | null {
+  if (!schema) return null;
+  const errors: string[] = [];
+  validateAgainstSchema(candidate, schema, '$', errors);
+  if (errors.length === 0) return null;
+  return errors.slice(0, 3).join('; ');
+}
+
+function partsToPrompt(parts: any[]): string {
+  return parts
+    .map((part) => {
+      if (typeof part?.text === 'string') return part.text;
+      if (part?.inlineData) {
+        const mime = part.inlineData.mimeType || 'application/octet-stream';
+        return `[Attached inline file was provided (${mime}), but text generation expects extracted text context.]`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function extractMistralMessageText(payload: any): string {
+  const parsed = payload?.choices?.[0]?.message?.parsed;
+  if (parsed && typeof parsed === 'object') {
+    return JSON.stringify(parsed);
+  }
+
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content;
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    return JSON.stringify(content);
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((entry: any) => {
+        if (typeof entry === 'string') return entry;
+        if (typeof entry?.text === 'string') return entry.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
+}
+
+async function requestMistralText(
+  label: string,
+  model: string,
+  config: Record<string, any>,
+  parts: any[],
+  retryHint?: string,
+): Promise<string> {
+  const prompt = partsToPrompt(parts);
+  const schemaGuidance = buildSchemaPromptGuidance(config.responseSchema as JsonSchemaLike | undefined);
+  const baseUserContent = `${prompt}\n\nOutput format requirements: ${schemaGuidance}`;
+  const userContent = retryHint ? `${baseUserContent}\n\n${retryHint}` : baseUserContent;
+  const responseFormat = buildMistralResponseFormat(
+    label,
+    config.responseSchema as JsonSchemaLike | undefined,
+  );
+  const messages = [
+    ...(config.systemInstruction
+      ? [{ role: 'system', content: String(config.systemInstruction) }]
+      : []),
+    { role: 'user', content: userContent },
+  ];
+
+  const res = await fetch('/api/mistral-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      messages,
+      response_format: responseFormat,
+      temperature: 0.2,
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => 'Unknown error');
+    throw new Error(`${label}: Mistral chat failed (${res.status}): ${errText}`);
+  }
+
+  const payload = await res.json();
+  const text = extractMistralMessageText(payload);
+  if (!text) {
+    throw new Error(`${label}: empty response from Mistral`);
+  }
+  return text;
+}
+
 export async function generateRunData(prompt: string, fileData?: { mimeType: string; data: string }, options?: { skipFileData?: boolean }): Promise<RunDataLegacy> {
   currentRunId = Date.now().toString();
   const parts: any[] = [{ text: prompt }];
@@ -215,16 +567,17 @@ Intents can be simple (Attack, Defend, Buff, Debuff, Unknown) or combined (Attac
 For enemies, set 'isFlying' to true only for airborne units (flying, hovering, levitating, winged). Otherwise set it to false.
 If a card applies 'Vulnerable', use the 'magicNumber' field to specify how many stacks.
 For audio fields, output ONLY the unique semantic fragment, not full production instructions.
-Audio fragment rules:
-- Keep fragments concrete and cinematic (specific source/action/material/emotion), avoid generic words like "epic sound effect".
-- Avoid technical directives like "loop", "high quality", "SFX", "music track", "audio", "stereo", "mix".
-- For card/enemy/boss audioPrompt: 4-14 words, one event-focused phrase describing physical action and material. Prefer warm, weighty, satisfying impacts — avoid shrill, piercing, or harsh sounds (no screech, shriek, piercing whistle).
-- For roomMusicPrompt/bossMusicPrompt: 6-18 words, describing motif/instrumentation/mood only.
+  Audio fragment rules:
+  - Keep fragments concrete and cinematic (specific source/action/material/emotion), avoid generic words like "epic sound effect".
+  - Avoid technical directives like "loop", "high quality", "SFX", "music track", "audio", "stereo", "mix".
+  - For card/enemy/boss audioPrompt: 4-14 words, one event-focused phrase describing physical action and material. Prefer warm, weighty, satisfying impacts — avoid shrill, piercing, or harsh sounds (no screech, shriek, piercing whistle).
+  - For roomMusicPrompt/bossMusicPrompt: 6-18 words, describing motif/instrumentation/mood only. Prefer atmospheric, moody textures with soft transients and warm low-mids; avoid aggressive drums, bright leads, harsh cymbals, or brittle highs.
 - Do not include spoken dialogue inside non-TTS prompts.
 Boss must include a 'narratorText' opening line (6-20 words), plus narrator voice hints:
 - narratorVoiceStyle: 2-8 words (example: "cold judicial authority")
 - narratorVoiceGender: one of male/female/neutral
 - narratorVoiceAccent: short accent hint if useful
+- Prefer natural human narration by default (grounded, cinematic, authoritative). Use robotic/synthetic cues only if the theme explicitly requires it.
 All returned string values must avoid raw double quote characters. Use apostrophes instead.
 Return the data strictly matching the provided JSON schema.`,
     responseMimeType: 'application/json',
@@ -297,7 +650,7 @@ Return the data strictly matching the provided JSON schema.`,
               imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: always include "facing left, looking left, side profile" in the prompt. Never include facing right.' },
               audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
               narratorText: { type: Type.STRING, description: 'A dramatic boss opening dialogue line for TTS, 6-20 words.' },
-              narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority".' },
+              narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority". Prefer natural human delivery unless explicitly synthetic.' },
               narratorVoiceGender: { type: Type.STRING, description: 'Preferred narrator gender hint: male, female, or neutral.' },
               narratorVoiceAccent: { type: Type.STRING, description: 'Optional accent hint for narrator voice selection.' },
               enrageThreshold: { type: Type.INTEGER, description: 'Percentage HP (0-100) when phase 2 starts' },
@@ -354,49 +707,7 @@ Return the data strictly matching the provided JSON schema.`,
     }
   };
 
-  let runData: RunDataLegacy | null = null;
-  let lastError: unknown = null;
-
-  for (let attempt = 0; attempt < RUN_DATA_MAX_ATTEMPTS; attempt++) {
-    const model = RUN_DATA_MODELS[Math.min(attempt, RUN_DATA_MODELS.length - 1)];
-    const retryHintPart = attempt > 0
-      ? [{
-        text: 'Retry because previous output was invalid JSON. Return only strict JSON, no markdown fences, no extra commentary, and ensure all string values are valid JSON strings.'
-      }]
-      : [];
-
-    const response = await ai.models.generateContent({
-      model,
-      contents: { parts: [...parts, ...retryHintPart] },
-      config: runDataConfig,
-    });
-
-    const text = response.text;
-    if (!text) {
-      lastError = new Error('No response from Gemini');
-      continue;
-    }
-
-    const candidates = collectJsonCandidates(text);
-    for (const candidate of candidates) {
-      try {
-        runData = JSON.parse(candidate) as RunDataLegacy;
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (runData) {
-      break;
-    }
-
-    console.warn(`generateRunData: attempt ${attempt + 1} returned malformed JSON; retrying...`, lastError);
-  }
-
-  if (!runData) {
-    throw new Error(`Failed to parse Gemini JSON after ${RUN_DATA_MAX_ATTEMPTS} attempts: ${errorToMessage(lastError)}`);
-  }
+  const runData = await requestStructuredJson<RunDataLegacy>('generateRunData', runDataConfig, parts);
 
   void saveRunSnapshot(runData);
 
@@ -600,6 +911,16 @@ const intentSchema = {
   required: ['type', 'value', 'description'],
 };
 
+const partialIntentSchema = {
+  type: Type.OBJECT,
+  properties: {
+    type: { type: Type.STRING },
+    value: { type: Type.INTEGER },
+    secondaryValue: { type: Type.INTEGER },
+    description: { type: Type.STRING },
+  },
+};
+
 const cardSchema = {
   type: Type.OBJECT,
   properties: {
@@ -616,6 +937,23 @@ const cardSchema = {
     audioPrompt: { type: Type.STRING },
   },
   required: ['id', 'name', 'cost', 'type', 'description', 'tags', 'imagePrompt', 'audioPrompt'],
+};
+
+const partialCardSchema = {
+  type: Type.OBJECT,
+  properties: {
+    id: { type: Type.STRING },
+    name: { type: Type.STRING },
+    cost: { type: Type.INTEGER },
+    type: { type: Type.STRING },
+    description: { type: Type.STRING },
+    damage: { type: Type.INTEGER },
+    block: { type: Type.INTEGER },
+    magicNumber: { type: Type.INTEGER },
+    tags: { type: Type.ARRAY, items: { type: Type.STRING } },
+    imagePrompt: { type: Type.STRING },
+    audioPrompt: { type: Type.STRING },
+  },
 };
 
 const enemySchema = {
@@ -635,6 +973,24 @@ const enemySchema = {
     },
   },
   required: ['id', 'name', 'maxHp', 'currentHp', 'description', 'intents', 'imagePrompt', 'audioPrompt'],
+};
+
+const partialEnemySchema = {
+  type: Type.OBJECT,
+  properties: {
+    id: { type: Type.STRING },
+    name: { type: Type.STRING },
+    maxHp: { type: Type.INTEGER },
+    currentHp: { type: Type.INTEGER },
+    description: { type: Type.STRING },
+    isFlying: { type: Type.BOOLEAN },
+    imagePrompt: { type: Type.STRING },
+    audioPrompt: { type: Type.STRING },
+    intents: {
+      type: Type.ARRAY,
+      items: partialIntentSchema,
+    },
+  },
 };
 
 const bossSchema = {
@@ -666,7 +1022,35 @@ const bossSchema = {
   ],
 };
 
+const partialBossSchema = {
+  type: Type.OBJECT,
+  properties: {
+    ...partialEnemySchema.properties,
+    enrageThreshold: { type: Type.INTEGER },
+    phase2Intents: {
+      type: Type.ARRAY,
+      items: partialIntentSchema,
+    },
+    narratorText: { type: Type.STRING },
+    narratorVoiceStyle: { type: Type.STRING },
+    narratorVoiceGender: { type: Type.STRING },
+    narratorVoiceAccent: { type: Type.STRING },
+  },
+};
+
 type FileData = { mimeType: string; data: string };
+
+function pickEventIcon(value: unknown, fallback: NonNullable<EventChoicePayload['icon']>): NonNullable<EventChoicePayload['icon']> {
+  return value === 'fire' || value === 'shield' || value === 'gold' ? value : fallback;
+}
+
+function pickEventColor(value: unknown, fallback: NonNullable<EventChoicePayload['color']>): NonNullable<EventChoicePayload['color']> {
+  return value === 'red' || value === 'blue' || value === 'orange' ? value : fallback;
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
 
 function buildRequestParts(prompt: string, fileData?: FileData, options?: { skipFileData?: boolean }): any[] {
   const parts: any[] = [{ text: prompt }];
@@ -690,29 +1074,36 @@ async function requestStructuredJson<T>(
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < RUN_DATA_MAX_ATTEMPTS; attempt++) {
-    const model = RUN_DATA_MODELS[Math.min(attempt, RUN_DATA_MODELS.length - 1)];
-    const retryHintPart = attempt > 0
-      ? [{
-        text: 'Retry because previous output was invalid JSON. Return only strict JSON, no markdown fences, no extra commentary.'
-      }]
-      : [];
-
-    const response = await ai.models.generateContent({
-      model,
-      contents: { parts: [...parts, ...retryHintPart] },
-      config,
-    });
-
-    const text = response.text;
-    if (!text) {
-      lastError = new Error(`${label}: no response text`);
+    const model = TEXT_MODELS[Math.min(attempt, TEXT_MODELS.length - 1)];
+    const retryHint = attempt > 0
+      ? 'Retry because previous output was invalid JSON. Return only strict JSON, no markdown fences, and no extra commentary.'
+      : undefined;
+    let text = '';
+    try {
+      text = await requestMistralText(label, model, config, parts, retryHint);
+    } catch (err) {
+      lastError = err;
+      console.warn(`${label}: attempt ${attempt + 1} failed before JSON parse; retrying...`, err);
       continue;
     }
 
     const candidates = collectJsonCandidates(text);
     for (const candidate of candidates) {
       try {
-        parsed = JSON.parse(candidate) as T;
+        const rawParsed = JSON.parse(candidate);
+        const candidateParsed = normalizeParsedCandidateForSchema(
+          rawParsed,
+          config.responseSchema as JsonSchemaLike | undefined
+        ) as T;
+        const schemaError = validateSchemaOrError(
+          candidateParsed,
+          config.responseSchema as JsonSchemaLike | undefined
+        );
+        if (schemaError) {
+          lastError = new Error(`${label}: schema validation failed: ${schemaError}`);
+          continue;
+        }
+        parsed = candidateParsed;
         break;
       } catch (err) {
         lastError = err;
@@ -724,7 +1115,7 @@ async function requestStructuredJson<T>(
   }
 
   if (!parsed) {
-    throw new Error(`${label}: failed to parse Gemini JSON after ${RUN_DATA_MAX_ATTEMPTS} attempts: ${errorToMessage(lastError)}`);
+    throw new Error(`${label}: failed to parse Mistral JSON after ${RUN_DATA_MAX_ATTEMPTS} attempts: ${errorToMessage(lastError)}`);
   }
 
   return parsed;
@@ -766,7 +1157,7 @@ function createDefendCard(theme: string): Card {
 }
 
 function normalizeCard(card: Partial<Card> | undefined, fallback: Card): Card {
-  if (!card) return fallback;
+  if (!isPlainObject(card)) return fallback;
   const normalizedType = card.type === 'Attack' || card.type === 'Skill' || card.type === 'Power'
     ? card.type
     : fallback.type;
@@ -783,6 +1174,17 @@ function normalizeCard(card: Partial<Card> | undefined, fallback: Card): Card {
     imagePrompt: card.imagePrompt || fallback.imagePrompt,
     audioPrompt: card.audioPrompt || fallback.audioPrompt,
   };
+}
+
+function stripCardMediaRefs(card: Card): Card {
+  const {
+    imageObjectId: _imageObjectId,
+    audioObjectId: _audioObjectId,
+    imageUrl: _imageUrl,
+    audioUrl: _audioUrl,
+    ...rest
+  } = card;
+  return rest;
 }
 
 function capIntentDamage(intents: Intent[], maxDmg: number): Intent[] {
@@ -809,7 +1211,7 @@ function normalizeEnemy(enemy: Partial<Enemy> | undefined, theme: string, isElit
     audioPrompt: 'rusted blade swipe with chain rattle',
   };
 
-  if (!enemy) return fallback;
+  if (!isPlainObject(enemy)) return fallback;
 
   const maxHpCap = isElite ? 65 : 45;
   const maxAttackDmg = isElite ? 14 : 10;
@@ -874,10 +1276,25 @@ function getFirstCombatNode(nodeMap: MapNode[]): MapNode | undefined {
   return nodeMap.find(node => node.row === 0 && node.type === 'Combat') || nodeMap.find(node => node.type === 'Combat');
 }
 
+function mergeDefinedFields<T extends Record<string, any>>(base: T, incoming: T): T {
+  const patch: Partial<T> = {};
+  for (const key in incoming) {
+    if (Object.prototype.hasOwnProperty.call(incoming, key) && incoming[key] !== undefined) {
+      patch[key] = incoming[key];
+    }
+  }
+  return { ...base, ...patch };
+}
+
 function mergeUniqueCards(existing: Card[], incoming: Card[]): Card[] {
   const byId = new Map(existing.map(card => [card.id, card]));
   for (const card of incoming) {
-    if (!byId.has(card.id)) byId.set(card.id, card);
+    const prev = byId.get(card.id);
+    if (!prev) {
+      byId.set(card.id, card);
+      continue;
+    }
+    byId.set(card.id, mergeDefinedFields(prev, card));
   }
   return Array.from(byId.values());
 }
@@ -885,9 +1302,31 @@ function mergeUniqueCards(existing: Card[], incoming: Card[]): Card[] {
 function mergeUniqueEnemies(existing: Enemy[], incoming: Enemy[]): Enemy[] {
   const byId = new Map(existing.map(enemy => [enemy.id, enemy]));
   for (const enemy of incoming) {
-    if (!byId.has(enemy.id)) byId.set(enemy.id, enemy);
+    const prev = byId.get(enemy.id);
+    if (!prev) {
+      byId.set(enemy.id, enemy);
+      continue;
+    }
+    byId.set(enemy.id, mergeDefinedFields(prev, enemy));
   }
   return Array.from(byId.values());
+}
+
+function canReuseManifestObjectId(
+  manifest: Record<string, GeneratedObjectManifestEntry>,
+  objectId: string | undefined,
+  roomId: string,
+  kind: 'image' | 'audio',
+  expectedPrompt?: string
+): boolean {
+  if (typeof objectId !== 'string') return false;
+  if (!objectId.startsWith(`${roomId}:${kind}:`)) return false;
+
+  const entry = manifest[objectId];
+  if (!entry) return true;
+  if (entry.kind !== kind) return false;
+  if (!expectedPrompt) return true;
+  return entry.prompt === expectedPrompt;
 }
 
 function registerCardObjects(
@@ -896,8 +1335,20 @@ function registerCardObjects(
   card: Card,
   slot: string
 ): Card {
-  const canReuseImageObjectId = typeof card.imageObjectId === 'string' && card.imageObjectId.startsWith(`${roomId}:image:`);
-  const canReuseAudioObjectId = typeof card.audioObjectId === 'string' && card.audioObjectId.startsWith(`${roomId}:audio:`);
+  const canReuseImageObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    card.imageObjectId,
+    roomId,
+    'image',
+    card.imagePrompt
+  );
+  const canReuseAudioObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    card.audioObjectId,
+    roomId,
+    'audio',
+    card.audioPrompt
+  );
   const imageObjectId = canReuseImageObjectId
     ? card.imageObjectId!
     : buildObjectId(roomId, 'image', `${slot}_card_${card.id}`);
@@ -937,8 +1388,21 @@ function registerEnemyObjects(
   enemy: Enemy,
   slot: string
 ): Enemy {
-  const canReuseImageObjectId = typeof enemy.imageObjectId === 'string' && enemy.imageObjectId.startsWith(`${roomId}:image:`);
-  const canReuseAudioObjectId = typeof enemy.audioObjectId === 'string' && enemy.audioObjectId.startsWith(`${roomId}:audio:`);
+  const expectedEnemyImagePrompt = enemy.imagePrompt ? buildEnemySpritePrompt(enemy.imagePrompt) : undefined;
+  const canReuseImageObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    enemy.imageObjectId,
+    roomId,
+    'image',
+    expectedEnemyImagePrompt
+  );
+  const canReuseAudioObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    enemy.audioObjectId,
+    roomId,
+    'audio',
+    enemy.audioPrompt
+  );
   const imageObjectId = canReuseImageObjectId
     ? enemy.imageObjectId!
     : buildObjectId(roomId, 'image', `${slot}_enemy_${enemy.id}`);
@@ -977,9 +1441,28 @@ function registerBossObjects(
   roomId: string,
   boss: Boss
 ): Boss {
-  const canReuseImageObjectId = typeof boss.imageObjectId === 'string' && boss.imageObjectId.startsWith(`${roomId}:image:`);
-  const canReuseAudioObjectId = typeof boss.audioObjectId === 'string' && boss.audioObjectId.startsWith(`${roomId}:audio:`);
-  const canReuseNarratorAudioObjectId = typeof boss.narratorAudioObjectId === 'string' && boss.narratorAudioObjectId.startsWith(`${roomId}:audio:`);
+  const expectedBossImagePrompt = boss.imagePrompt ? buildBossSpritePrompt(boss.imagePrompt) : undefined;
+  const canReuseImageObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    boss.imageObjectId,
+    roomId,
+    'image',
+    expectedBossImagePrompt
+  );
+  const canReuseAudioObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    boss.audioObjectId,
+    roomId,
+    'audio',
+    boss.audioPrompt
+  );
+  const canReuseNarratorAudioObjectId = canReuseManifestObjectId(
+    runData.objectManifest,
+    boss.narratorAudioObjectId,
+    roomId,
+    'audio',
+    boss.narratorText
+  );
   const imageObjectId = canReuseImageObjectId
     ? boss.imageObjectId!
     : buildObjectId(roomId, 'image', `boss_${boss.id}`);
@@ -1027,6 +1510,254 @@ function registerBossObjects(
   };
 }
 
+function getRoomIdFromObjectId(objectId: string | undefined): string | undefined {
+  if (!objectId) return undefined;
+  const split = objectId.indexOf(':');
+  if (split <= 0) return undefined;
+  return objectId.slice(0, split);
+}
+
+function allocateRepairedObjectId(
+  roomId: string,
+  kind: 'image' | 'audio',
+  slotSeed: string,
+  prompt: string,
+  registry: Map<string, string>
+): string {
+  let attempt = 0;
+  while (true) {
+    const slot = attempt === 0 ? slotSeed : `${slotSeed}_${attempt}`;
+    const candidate = buildObjectId(roomId, kind, slot);
+    const existingPrompt = registry.get(candidate);
+    if (existingPrompt === undefined || existingPrompt === prompt) {
+      registry.set(candidate, prompt);
+      return candidate;
+    }
+    attempt += 1;
+  }
+}
+
+function cloneManifestEntryForCardRepair(params: {
+  manifest: Record<string, GeneratedObjectManifestEntry>;
+  oldId?: string;
+  newId: string;
+  roomId: string;
+  kind: 'image' | 'audio';
+  prompt: string;
+  url?: string;
+}): void {
+  const oldEntry = params.oldId ? params.manifest[params.oldId] : undefined;
+  const ts = nowTs();
+  const promptMatchesOld = oldEntry?.prompt === params.prompt;
+  const reusedUrl = promptMatchesOld ? oldEntry?.url : undefined;
+  const reusedStatus = promptMatchesOld ? oldEntry?.status : undefined;
+  const reusedError = promptMatchesOld ? oldEntry?.error : undefined;
+
+  params.manifest[params.newId] = {
+    id: params.newId,
+    roomId: params.roomId,
+    kind: params.kind,
+    prompt: params.prompt,
+    status: params.url ? 'ready' : (reusedStatus || 'pending'),
+    url: params.url || reusedUrl,
+    error: params.url ? undefined : reusedError,
+    fileKey: buildObjectFileKey(params.newId),
+    imageType: oldEntry?.imageType || (params.kind === 'image' ? 'asset' : undefined),
+    audioSource: oldEntry?.audioSource || (params.kind === 'audio' ? 'card' : undefined),
+    musicMode: oldEntry?.musicMode,
+    createdAt: oldEntry?.createdAt || ts,
+    updatedAt: ts,
+  };
+}
+
+function syncPayloadCardRefs(payload: RoomContentPayload): RoomContentPayload {
+  const refs = payload.objectRefs || {};
+  if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
+    const rewardCards = payload.rewardCards || [];
+    return {
+      ...payload,
+      objectRefs: {
+        ...refs,
+        cardImageIds: rewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        cardSfxIds: rewardCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
+    };
+  }
+  if (payload.nodeType === 'Shop') {
+    return {
+      ...payload,
+      objectRefs: {
+        ...refs,
+        cardImageIds: payload.shopCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        cardSfxIds: payload.shopCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
+    };
+  }
+  if (payload.nodeType === 'Event') {
+    const addCards = payload.choices
+      .map(choice => choice.effects?.addCard)
+      .filter((card): card is Card => Boolean(card));
+    return {
+      ...payload,
+      objectRefs: {
+        ...refs,
+        cardImageIds: addCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+        cardSfxIds: addCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+      },
+    };
+  }
+  return payload;
+}
+
+export function repairRunDataCardMediaRefs(runData: RunData): RunData {
+  if (!isRunDataV2(runData)) return runData;
+
+  const repairedManifest: Record<string, GeneratedObjectManifestEntry> = { ...runData.objectManifest };
+  const imagePromptByObjectId = new Map<string, string>();
+  const audioPromptByObjectId = new Map<string, string>();
+  Object.values(repairedManifest).forEach(entry => {
+    if (entry.kind === 'image') {
+      imagePromptByObjectId.set(entry.id, entry.prompt);
+      return;
+    }
+    audioPromptByObjectId.set(entry.id, entry.prompt);
+  });
+
+  const repairCard = (card: Card, roomIdHint?: string): Card => {
+    let nextCard = card;
+    const roomId = roomIdHint || getRoomIdFromObjectId(card.imageObjectId) || getRoomIdFromObjectId(card.audioObjectId) || GLOBAL_ROOM_ID;
+
+    if (card.imageObjectId && card.imagePrompt) {
+      const priorPrompt = imagePromptByObjectId.get(card.imageObjectId);
+      if (priorPrompt === undefined) {
+        imagePromptByObjectId.set(card.imageObjectId, card.imagePrompt);
+      } else if (priorPrompt !== card.imagePrompt) {
+        const newImageObjectId = allocateRepairedObjectId(
+          roomId,
+          'image',
+          `repaired_card_${card.id}_image`,
+          card.imagePrompt,
+          imagePromptByObjectId
+        );
+        nextCard = {
+          ...nextCard,
+          imageObjectId: newImageObjectId,
+        };
+        cloneManifestEntryForCardRepair({
+          manifest: repairedManifest,
+          oldId: card.imageObjectId,
+          newId: newImageObjectId,
+          roomId,
+          kind: 'image',
+          prompt: card.imagePrompt,
+          url: card.imageUrl,
+        });
+      }
+    }
+
+    if (card.audioObjectId && card.audioPrompt) {
+      const priorPrompt = audioPromptByObjectId.get(card.audioObjectId);
+      if (priorPrompt === undefined) {
+        audioPromptByObjectId.set(card.audioObjectId, card.audioPrompt);
+      } else if (priorPrompt !== card.audioPrompt) {
+        const newAudioObjectId = allocateRepairedObjectId(
+          roomId,
+          'audio',
+          `repaired_card_${card.id}_audio`,
+          card.audioPrompt,
+          audioPromptByObjectId
+        );
+        nextCard = {
+          ...nextCard,
+          audioObjectId: newAudioObjectId,
+        };
+        cloneManifestEntryForCardRepair({
+          manifest: repairedManifest,
+          oldId: card.audioObjectId,
+          newId: newAudioObjectId,
+          roomId,
+          kind: 'audio',
+          prompt: card.audioPrompt,
+          url: card.audioUrl,
+        });
+      }
+    }
+
+    return nextCard;
+  };
+
+  const repairedCards = runData.cards.map(card => repairCard(card));
+  const repairedStarterCards = runData.bootstrap.starterCards.map(card => repairCard(card)) as [Card, Card, Card];
+  const repairedRooms: RunDataV2['rooms'] = Object.fromEntries(
+    Object.entries(runData.rooms).map(([roomId, state]) => {
+      if (!state.payload) return [roomId, state];
+      const payload = state.payload;
+      if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
+        const rewardCards = (payload.rewardCards || []).map(card => repairCard(card, roomId));
+        return [
+          roomId,
+          {
+            ...state,
+            payload: syncPayloadCardRefs({
+              ...payload,
+              rewardCards,
+            }),
+          },
+        ];
+      }
+      if (payload.nodeType === 'Shop') {
+        const shopCards = payload.shopCards.map(card => repairCard(card, roomId));
+        return [
+          roomId,
+          {
+            ...state,
+            payload: syncPayloadCardRefs({
+              ...payload,
+              shopCards,
+            }),
+          },
+        ];
+      }
+      if (payload.nodeType === 'Event') {
+        const choices = payload.choices.map(choice => {
+          const addCard = choice.effects?.addCard
+            ? repairCard(choice.effects.addCard, roomId)
+            : undefined;
+          return {
+            ...choice,
+            effects: {
+              ...(choice.effects || {}),
+              addCard,
+            },
+          };
+        });
+        return [
+          roomId,
+          {
+            ...state,
+            payload: syncPayloadCardRefs({
+              ...payload,
+              choices,
+            }),
+          },
+        ];
+      }
+      return [roomId, state];
+    })
+  );
+
+  return {
+    ...runData,
+    cards: repairedCards,
+    bootstrap: {
+      ...runData.bootstrap,
+      starterCards: repairedStarterCards,
+    },
+    objectManifest: repairedManifest,
+    rooms: repairedRooms,
+  };
+}
+
 function ensureSharedPlayerImageRefs(
   objectManifest: Record<string, GeneratedObjectManifestEntry>,
   theme: string,
@@ -1068,6 +1799,72 @@ function ensureSharedPlayerImageRefs(
   return { playerPortraitImageId, playerSpriteImageId };
 }
 
+function createFallbackSpecialCard(theme: string, index: number): Card {
+  const seeds: Array<Pick<Card, 'name' | 'type' | 'cost' | 'description' | 'damage' | 'block' | 'magicNumber' | 'tags' | 'audioPrompt'>> = [
+    {
+      name: 'Rising Tempo',
+      type: 'Attack',
+      cost: 1,
+      description: 'Deal 8 damage. Draw 1 card.',
+      damage: 8,
+      tags: ['Rhythm'],
+      audioPrompt: 'surging arcane pulse with crisp impact',
+    },
+    {
+      name: 'Guarded Step',
+      type: 'Skill',
+      cost: 1,
+      description: 'Gain 7 Block. Draw 1 card.',
+      block: 7,
+      tags: ['Guard'],
+      audioPrompt: 'layered shield brace with leather slide',
+    },
+    {
+      name: 'Anchor Hex',
+      type: 'Power',
+      cost: 1,
+      description: 'Whenever you play a Skill, gain 1 Block.',
+      magicNumber: 1,
+      tags: ['Hex'],
+      audioPrompt: 'etched sigil hum with stone resonance',
+    },
+    {
+      name: 'Severing Arc',
+      type: 'Attack',
+      cost: 2,
+      description: 'Deal 12 damage. Apply 2 Vulnerable.',
+      damage: 12,
+      magicNumber: 2,
+      tags: ['Blade'],
+      audioPrompt: 'heavy steel cleave with ringing followthrough',
+    },
+    {
+      name: 'Patient Formation',
+      type: 'Skill',
+      cost: 1,
+      description: 'Gain 9 Block.',
+      block: 9,
+      tags: ['Tactics'],
+      audioPrompt: 'tight shield lock with muted thud',
+    },
+  ];
+
+  const seed = seeds[index % seeds.length];
+  return {
+    id: `special_${index}_${toFileSafeKey(theme)}`,
+    name: seed.name,
+    cost: seed.cost,
+    type: seed.type,
+    description: seed.description,
+    damage: seed.damage,
+    block: seed.block,
+    magicNumber: seed.magicNumber,
+    tags: seed.tags,
+    imagePrompt: `stylized fantasy card art for ${seed.name}, ${theme} theme`,
+    audioPrompt: seed.audioPrompt,
+  };
+}
+
 export async function generateRunBootstrap(
   prompt: string,
   fileData?: FileData,
@@ -1075,182 +1872,552 @@ export async function generateRunBootstrap(
   options?: { skipFileData?: boolean },
 ): Promise<RunDataV2> {
   currentRunId = Date.now().toString();
-  const parts = buildRequestParts(prompt, fileData, options);
+  const baseParts = buildRequestParts(prompt, fileData, options);
+  const placeholderTheme = 'Dark Fantasy';
+  const placeholderCards: Card[] = [
+    createStrikeCard(placeholderTheme),
+    createDefendCard(placeholderTheme),
+    ...Array.from({ length: 5 }, (_, idx) => createFallbackSpecialCard(placeholderTheme, idx)),
+  ];
+  const placeholderEnemies: Enemy[] = Array.from({ length: 4 }, (_, idx) => ({
+    ...normalizeEnemy(undefined, placeholderTheme),
+    id: `enemy_placeholder_${idx + 1}`,
+    name: `Sentinel ${idx + 1}`,
+  }));
+  const placeholderBoss = createPlaceholderBoss(placeholderTheme);
+  const skeletonSeed: RunDataLegacy = {
+    theme: placeholderTheme,
+    cards: placeholderCards,
+    enemies: placeholderEnemies,
+    boss: placeholderBoss,
+    synergies: [defaultSynergyFromCard(placeholderCards[2])],
+    roomMusicPrompt: 'hushed bowed strings over distant low drone',
+    bossMusicPrompt: 'ominous low choir over cavernous drones and muted war drums',
+  };
+  const node_map = generateFallbackNodeMap(skeletonSeed);
+  const nodeSkeleton = node_map.map(node => ({
+    roomId: node.id,
+    nodeType: node.type,
+    row: node.row ?? Math.round(node.y / 20),
+    nextNodes: node.nextNodes,
+  }));
 
   const config = {
     systemInstruction: `You are an expert game designer for a Slay the Spire-style roguelike deckbuilder.
-Generate ONLY the minimal bootstrap package needed to start the first combat quickly.
+Generate a COMPLETE run package in one response.
 Return strictly valid JSON matching the schema.
-Constraints:
-- strike card MUST be Attack cost 1 damage 6 with simple text.
-- defend card MUST be Skill cost 1 block 5 with simple text.
-- uniqueCard must be a distinct non-starter card.
-- firstEnemy must be a basic early enemy suitable for floor 1.
-- firstEnemy.isFlying must be true only if the enemy is airborne; otherwise false.
-- roomMusicPrompt must be short and thematic.
-- essentialSfxPrompts should include 4 concise prompts: strike, defend, unique card, first enemy.
-Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
+Rules:
+- Exactly 7 cards total. Card 1 MUST be Strike (Attack, cost 1, damage 6). Card 2 MUST be Defend (Skill, cost 1, block 5). Remaining 5 are unique specials.
+- Exactly 4 unique normal enemies in enemies[].
+- Exactly 1 boss in boss.
+- Exactly 1 synergy in synergies[].
+- For enemies in rooms, refer to enemies[] using enemyIds.
+- Every room from provided map skeleton must have one entry in rooms[].
+- Combat: 1-2 enemyIds and up to 3 rewardCards.
+- Elite: exactly 1 enemyId and up to 3 rewardCards.
+- Boss: optional boss override + backgroundPrompt + bossMusicPrompt.
+- Event: include title, description, imagePrompt, footerText, and exactly 3 choices.
+- Shop: include exactly 3 shopCards.
+- Treasure and Campfire can use minimal fields.
+Audio rules:
+- audioPrompt fields are 4-14 words, physical action/material only, no technical audio terms.
+  - roomMusicPrompt/bossMusicPrompt are 6-18 words, instrumentation/mood only, atmospheric and soft-edged (avoid harsh or brittle textures).
+- narratorText is 6-20 words.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
         theme: { type: Type.STRING },
-        strike: cardSchema,
-        defend: cardSchema,
-        uniqueCard: cardSchema,
-        firstEnemy: enemySchema,
+        cards: { type: Type.ARRAY, minItems: 7, maxItems: 7 },
+        enemies: { type: Type.ARRAY, minItems: 4, maxItems: 4 },
+        boss: { type: Type.OBJECT },
+        synergies: {
+          type: Type.ARRAY,
+          minItems: 1,
+          maxItems: 1,
+        },
         roomMusicPrompt: { type: Type.STRING },
-        essentialSfxPrompts: { type: Type.ARRAY, items: { type: Type.STRING } },
+        bossMusicPrompt: { type: Type.STRING },
+        rooms: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              roomId: { type: Type.STRING },
+              nodeType: { type: Type.STRING },
+              enemyIds: { type: Type.ARRAY, items: { type: Type.STRING } },
+              rewardCards: { type: Type.ARRAY, maxItems: 3 },
+              backgroundPrompt: { type: Type.STRING },
+              roomMusicPrompt: { type: Type.STRING },
+              boss: partialBossSchema,
+              bossMusicPrompt: { type: Type.STRING },
+              title: { type: Type.STRING },
+              description: { type: Type.STRING },
+              imagePrompt: { type: Type.STRING },
+              footerText: { type: Type.STRING },
+              choices: {
+                type: Type.ARRAY,
+                maxItems: 3,
+                items: {
+                  type: Type.OBJECT,
+                },
+              },
+              shopCards: { type: Type.ARRAY, maxItems: 3 },
+              treasureGold: { type: Type.INTEGER },
+            },
+            required: ['roomId', 'nodeType'],
+          },
+        },
       },
-      required: ['theme', 'strike', 'defend', 'uniqueCard', 'firstEnemy', 'roomMusicPrompt'],
+      required: ['cards', 'enemies', 'rooms'],
     },
+  };
+
+  type GeneratedRoomPlan = {
+    roomId: string;
+    nodeType?: MapNode['type'];
+    enemyIds?: string[];
+    rewardCards?: Array<Partial<Card> | string>;
+    backgroundPrompt?: string;
+    roomMusicPrompt?: string;
+    boss?: Partial<Boss>;
+    bossMusicPrompt?: string;
+    title?: string;
+    description?: string;
+    imagePrompt?: string;
+    footerText?: string;
+    choices?: Array<{
+      id?: string;
+      label?: string;
+      description?: string;
+      icon?: unknown;
+      color?: unknown;
+      effects?: {
+        hpDelta?: unknown;
+        maxHpDelta?: unknown;
+        goldDelta?: unknown;
+        addCard?: Partial<Card>;
+      };
+    }>;
+    shopCards?: Array<Partial<Card> | string>;
+    treasureGold?: number;
   };
 
   const parsed = await requestStructuredJson<{
     theme: string;
-    strike: Partial<Card>;
-    defend: Partial<Card>;
-    uniqueCard: Partial<Card>;
-    firstEnemy: Partial<Enemy>;
+    cards: Partial<Card>[];
+    enemies: Partial<Enemy>[];
+    boss: Partial<Boss>;
+    synergies?: Synergy[];
     roomMusicPrompt?: string;
-    essentialSfxPrompts?: string[];
-  }>('generateRunBootstrap', config, parts);
+    bossMusicPrompt?: string;
+    rooms?: GeneratedRoomPlan[];
+  }>('generateRunBootstrap', config, [
+    ...baseParts,
+    { text: `Map skeleton (all roomIds below MUST be covered exactly once in rooms[]):\n${JSON.stringify(nodeSkeleton)}` },
+  ]);
 
   const theme = parsed.theme || 'Dark Fantasy';
-  const strike = normalizeCard(parsed.strike, createStrikeCard(theme));
+  const roomMusicPrompt = parsed.roomMusicPrompt || 'hushed bowed strings over distant low drone';
+  const bossMusicPrompt = parsed.bossMusicPrompt || 'ominous low choir over cavernous drones and muted war drums';
+
+  const strike = normalizeCard(parsed.cards?.[0], createStrikeCard(theme));
+  strike.id = 'strike';
   strike.name = 'Strike';
   strike.type = 'Attack';
   strike.cost = 1;
   strike.damage = 6;
+  strike.block = undefined;
   strike.description = 'Deal 6 damage.';
 
-  const defend = normalizeCard(parsed.defend, createDefendCard(theme));
+  const defend = normalizeCard(parsed.cards?.[1], createDefendCard(theme));
+  defend.id = 'defend';
   defend.name = 'Defend';
   defend.type = 'Skill';
   defend.cost = 1;
   defend.block = 5;
+  defend.damage = undefined;
   defend.description = 'Gain 5 Block.';
 
-  const uniqueFallback: Card = {
-    id: `unique_${toFileSafeKey(theme)}`,
-    name: 'Rising Tempo',
-    cost: 1,
-    type: 'Attack',
-    description: 'Deal 8 damage. Draw 1 card.',
-    damage: 8,
-    tags: ['Rhythm'],
-    imagePrompt: `a card depicting a rising arc of energy, ${theme} style`,
-    audioPrompt: 'surging arcane pulse with crisp impact',
+  const specialCards = Array.from({ length: 5 }, (_, idx) => {
+    const fallback = createFallbackSpecialCard(theme, idx);
+    const next = normalizeCard(parsed.cards?.[idx + 2], fallback);
+    if (next.name.trim().toLowerCase() === 'strike' || next.name.trim().toLowerCase() === 'defend') {
+      next.name = `${next.name} Prime`;
+    }
+    return next;
+  });
+
+  const allCards = [strike, defend, ...specialCards];
+  const seenCardIds = new Set<string>();
+  const cards = allCards.map((card, idx) => {
+    let id = card.id || `card_${idx}`;
+    while (seenCardIds.has(id)) {
+      id = `${id}_${idx}`;
+    }
+    seenCardIds.add(id);
+    return { ...card, id };
+  });
+
+  const normalizedEnemies = Array.from({ length: 4 }, (_, idx) => {
+    const fallback = normalizeEnemy(
+      {
+        id: `enemy_${idx + 1}_${toFileSafeKey(theme)}`,
+        name: `Wandering Foe ${idx + 1}`,
+      },
+      theme,
+      false,
+    );
+    const next = normalizeEnemy(parsed.enemies?.[idx], theme);
+    return { ...fallback, ...next };
+  });
+  const seenEnemyIds = new Set<string>();
+  const enemies = normalizedEnemies.map((enemy, idx) => {
+    let id = enemy.id || `enemy_${idx + 1}`;
+    while (seenEnemyIds.has(id)) {
+      id = `${id}_${idx}`;
+    }
+    seenEnemyIds.add(id);
+    return { ...enemy, id };
+  });
+
+  const fallbackBoss = createPlaceholderBoss(theme);
+  const rawBoss = parsed.boss || {};
+  const parsedBossHp = Math.max(80, Math.min(130, Number(rawBoss.maxHp) || fallbackBoss.maxHp));
+  const boss: Boss = {
+    ...fallbackBoss,
+    ...rawBoss,
+    id: rawBoss.id || fallbackBoss.id,
+    name: rawBoss.name || fallbackBoss.name,
+    maxHp: parsedBossHp,
+    currentHp: parsedBossHp,
+    intents: capIntentDamage(
+      Array.isArray(rawBoss.intents) && rawBoss.intents.length > 0 ? rawBoss.intents : fallbackBoss.intents,
+      16,
+    ),
+    phase2Intents: capIntentDamage(
+      Array.isArray(rawBoss.phase2Intents) && rawBoss.phase2Intents.length > 0 ? rawBoss.phase2Intents : fallbackBoss.phase2Intents,
+      22,
+    ),
+    narratorText: rawBoss.narratorText || fallbackBoss.narratorText,
   };
-  const uniqueCard = normalizeCard(parsed.uniqueCard, uniqueFallback);
-  if (uniqueCard.name.toLowerCase() === 'strike' || uniqueCard.name.toLowerCase() === 'defend') {
-    uniqueCard.name = `${uniqueCard.name} Prime`;
+
+  const synergy = (Array.isArray(parsed.synergies) && parsed.synergies[0])
+    ? { ...defaultSynergyFromCard(cards[2]), ...parsed.synergies[0] }
+    : defaultSynergyFromCard(cards[2]);
+  const synergies: Synergy[] = [synergy];
+
+  const objectManifest: Record<string, GeneratedObjectManifestEntry> = {};
+  const sharedPlayerRefs = ensureSharedPlayerImageRefs(objectManifest, theme);
+  const cardsWithObjects = cards.map((card, idx) => registerCardObjects(
+    { objectManifest },
+    GLOBAL_ROOM_ID,
+    card,
+    `run_card_${idx}`,
+  ));
+  const enemiesWithObjects = enemies.map((enemy, idx) => registerEnemyObjects(
+    { objectManifest },
+    GLOBAL_ROOM_ID,
+    enemy,
+    `enemy_${idx}`,
+  ));
+  const bossWithObjects = registerBossObjects({ objectManifest }, GLOBAL_ROOM_ID, boss);
+  const cardsById = new Map(cardsWithObjects.map(card => [card.id, card]));
+  const enemiesById = new Map(enemiesWithObjects.map(enemy => [enemy.id, enemy]));
+  const nonStarterCards = cardsWithObjects.filter(card => card.id !== 'strike' && card.id !== 'defend');
+  const roomsById = new Map<string, GeneratedRoomPlan>();
+  const allowedRoomIds = new Set(node_map.map(node => node.id));
+  (parsed.rooms || []).forEach(room => {
+    if (!room?.roomId || !allowedRoomIds.has(room.roomId) || roomsById.has(room.roomId)) return;
+    roomsById.set(room.roomId, room);
+  });
+
+  const resolvePlanCard = (
+    roomId: string,
+    card: Partial<Card> | string | undefined,
+    slot: string,
+    fallback: Card,
+  ): Card => {
+    if (typeof card === 'string' && cardsById.has(card)) {
+      return { ...cardsById.get(card)! };
+    }
+    if (isPlainObject(card) && typeof card.id === 'string' && cardsById.has(card.id)) {
+      return { ...cardsById.get(card.id)! };
+    }
+    const normalizedInput = isPlainObject(card) ? (card as Partial<Card>) : undefined;
+    return registerCardObjects(
+      { objectManifest },
+      roomId,
+      normalizeCard(normalizedInput, fallback),
+      slot,
+    );
+  };
+
+  let encounterCounter = 0;
+  let rewardCursor = 0;
+  let shopCursor = 0;
+  const rooms: RunDataV2['rooms'] = {};
+  const createdAt = nowTs();
+
+  node_map.forEach((node, nodeIndex) => {
+    const plan = roomsById.get(node.id);
+    let payload: RoomContentPayload;
+
+    if (node.type === 'Combat' || node.type === 'Elite') {
+      const desiredEnemyCount = node.type === 'Elite'
+        ? 1
+        : Math.min(2, Math.max(1, Array.isArray(node.data) ? node.data.length : 1));
+      const plannedEnemyIds = (plan?.enemyIds || []).filter(id => enemiesById.has(id));
+      const selectedEnemyBases: Enemy[] = [];
+      for (let i = 0; i < desiredEnemyCount; i++) {
+        const plannedId = plannedEnemyIds[i];
+        if (plannedId && enemiesById.has(plannedId)) {
+          selectedEnemyBases.push(enemiesById.get(plannedId)!);
+        } else {
+          selectedEnemyBases.push(enemiesWithObjects[(encounterCounter + i) % enemiesWithObjects.length]);
+        }
+      }
+      if (selectedEnemyBases.length === 0) {
+        selectedEnemyBases.push(enemiesWithObjects[encounterCounter % enemiesWithObjects.length]);
+      }
+
+      const roomEnemies = selectedEnemyBases.map((base, idx) => {
+        const hpScale = node.type === 'Elite'
+          ? 1.4
+          : (selectedEnemyBases.length > 1 && idx > 0 ? 0.7 : 1);
+        const maxHp = Math.max(1, Math.round(base.maxHp * hpScale));
+        const name = node.type === 'Elite' ? `Ascended ${base.name}` : base.name;
+        return {
+          ...base,
+          id: `${base.id}_enc_${node.id}_${idx}`,
+          name,
+          maxHp,
+          currentHp: maxHp,
+        };
+      });
+      encounterCounter += 1;
+
+      const rewardFallbackPool = nonStarterCards.length > 0 ? nonStarterCards : cardsWithObjects;
+      const plannedRewardCards = (plan?.rewardCards || []).slice(0, 3).map((card, idx) => {
+        const fallback = rewardFallbackPool[(rewardCursor + idx) % rewardFallbackPool.length];
+        return resolvePlanCard(node.id, card, `reward_${idx}`, fallback);
+      });
+      const rewardCards = plannedRewardCards.length > 0
+        ? plannedRewardCards
+        : Array.from({ length: Math.min(3, rewardFallbackPool.length) }, (_, idx) => {
+          const fallback = rewardFallbackPool[(rewardCursor + idx) % rewardFallbackPool.length];
+          return { ...fallback };
+        });
+      rewardCursor += 1;
+
+      const backgroundPrompt = normalizeBattleBackgroundPrompt(plan?.backgroundPrompt, theme);
+      const effectiveRoomMusicPrompt = plan?.roomMusicPrompt || roomMusicPrompt;
+      const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+      const roomMusicId = buildObjectId(node.id, 'audio', 'room_music');
+      ensureManifestEntry(objectManifest, {
+        id: backgroundImageId,
+        roomId: node.id,
+        kind: 'image',
+        prompt: backgroundPrompt,
+        imageType: 'background',
+        fileKey: buildObjectFileKey(backgroundImageId),
+      });
+      if (effectiveRoomMusicPrompt) {
+        ensureManifestEntry(objectManifest, {
+          id: roomMusicId,
+          roomId: node.id,
+          kind: 'audio',
+          prompt: effectiveRoomMusicPrompt,
+          audioSource: node.type === 'Elite' ? 'boss' : 'generic',
+          musicMode: 'room',
+          fileKey: buildObjectFileKey(roomMusicId),
+        });
+      }
+
+      payload = {
+        roomId: node.id,
+        nodeType: node.type === 'Elite' ? 'Elite' : 'Combat',
+        enemies: roomEnemies,
+        rewardCards,
+        backgroundPrompt,
+        roomMusicPrompt: effectiveRoomMusicPrompt,
+        objectRefs: {
+          ...sharedPlayerRefs,
+          backgroundImageId,
+          enemySpriteImageIds: roomEnemies.map(enemy => enemy.imageObjectId).filter(Boolean) as string[],
+          cardImageIds: rewardCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+          roomMusicId: effectiveRoomMusicPrompt ? roomMusicId : undefined,
+          enemySfxIds: roomEnemies.map(enemy => enemy.audioObjectId).filter(Boolean) as string[],
+          cardSfxIds: rewardCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+        },
+      } satisfies CombatRoomContent;
+      node.data = roomEnemies;
+    } else if (node.type === 'Boss') {
+      const backgroundPrompt = normalizeBattleBackgroundPrompt(plan?.backgroundPrompt, theme);
+      const effectiveBossMusicPrompt = plan?.bossMusicPrompt || bossMusicPrompt;
+      const backgroundImageId = buildObjectId(node.id, 'image', 'background');
+      const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
+      ensureManifestEntry(objectManifest, {
+        id: backgroundImageId,
+        roomId: node.id,
+        kind: 'image',
+        prompt: backgroundPrompt,
+        imageType: 'background',
+        fileKey: buildObjectFileKey(backgroundImageId),
+      });
+      ensureManifestEntry(objectManifest, {
+        id: bossMusicId,
+        roomId: node.id,
+        kind: 'audio',
+        prompt: effectiveBossMusicPrompt,
+        audioSource: 'generic',
+        musicMode: 'boss',
+        fileKey: buildObjectFileKey(bossMusicId),
+      });
+
+      const bossEncounter: Boss = {
+        ...bossWithObjects,
+        id: `${bossWithObjects.id}_enc_${node.id}`,
+        maxHp: bossWithObjects.maxHp,
+        currentHp: bossWithObjects.maxHp,
+      };
+
+      payload = {
+        roomId: node.id,
+        nodeType: 'Boss',
+        boss: bossEncounter,
+        backgroundPrompt,
+        bossMusicPrompt: effectiveBossMusicPrompt,
+        objectRefs: {
+          ...sharedPlayerRefs,
+          backgroundImageId,
+          bossSpriteImageId: bossEncounter.imageObjectId,
+          bossMusicId,
+          bossSfxId: bossEncounter.audioObjectId,
+          bossTtsId: bossEncounter.narratorAudioObjectId,
+        },
+      };
+      node.data = bossEncounter;
+    } else if (node.type === 'Event') {
+      const eventImageId = buildObjectId(node.id, 'image', 'event_visual');
+      const imagePrompt = plan?.imagePrompt || `mysterious event scene in ${theme} style, fantasy game art`;
+      ensureManifestEntry(objectManifest, {
+        id: eventImageId,
+        roomId: node.id,
+        kind: 'image',
+        prompt: imagePrompt,
+        imageType: 'background',
+        fileKey: buildObjectFileKey(eventImageId),
+      });
+      const fallbackCard = nonStarterCards[0] || cardsWithObjects[0];
+      const rawChoices = Array.isArray(plan?.choices) ? plan!.choices : [];
+      const choices: EventChoicePayload[] = Array.from({ length: 3 }, (_, idx) => {
+        const raw = rawChoices[idx] || {};
+        const rawEffects = raw.effects || {};
+        const addCard = rawEffects.addCard
+          ? resolvePlanCard(node.id, rawEffects.addCard, `event_choice_${idx}`, fallbackCard)
+          : undefined;
+        const defaultChoice = [
+          { id: 'event-heal', label: 'Take a steady breath', description: 'Heal 8 HP.', icon: 'fire', color: 'red', effects: { hpDelta: 8 } },
+          { id: 'event-gold', label: 'Search the area', description: 'Gain 20 gold.', icon: 'gold', color: 'orange', effects: { goldDelta: 20 } },
+          { id: 'event-card', label: 'Study the omen', description: 'Add a card to your deck.', icon: 'shield', color: 'blue', effects: { addCard: fallbackCard } },
+        ][idx];
+        return {
+          id: typeof raw.id === 'string' && raw.id.trim().length > 0 ? raw.id : defaultChoice.id,
+          label: typeof raw.label === 'string' && raw.label.trim().length > 0 ? raw.label : defaultChoice.label,
+          description: typeof raw.description === 'string' && raw.description.trim().length > 0 ? raw.description : defaultChoice.description,
+          icon: pickEventIcon(raw.icon, defaultChoice.icon as NonNullable<EventChoicePayload['icon']>),
+          color: pickEventColor(raw.color, defaultChoice.color as NonNullable<EventChoicePayload['color']>),
+          effects: {
+            hpDelta: toOptionalNumber(rawEffects.hpDelta) ?? defaultChoice.effects.hpDelta,
+            maxHpDelta: toOptionalNumber(rawEffects.maxHpDelta),
+            goldDelta: toOptionalNumber(rawEffects.goldDelta) ?? defaultChoice.effects.goldDelta,
+            addCard,
+          },
+        };
+      });
+
+      payload = {
+        roomId: node.id,
+        nodeType: 'Event',
+        title: plan?.title || 'A Curious Encounter',
+        description: plan?.description || `You encounter an unusual scene shaped by ${theme}.`,
+        imagePrompt,
+        footerText: plan?.footerText || 'Choose wisely.',
+        choices,
+        objectRefs: {
+          eventImageId,
+          cardImageIds: choices.map(choice => choice.effects?.addCard?.imageObjectId).filter(Boolean) as string[],
+          cardSfxIds: choices.map(choice => choice.effects?.addCard?.audioObjectId).filter(Boolean) as string[],
+        },
+      };
+    } else if (node.type === 'Shop') {
+      const fallbackShopPool = nonStarterCards.length > 0 ? nonStarterCards : cardsWithObjects;
+      const plannedShopCards = (plan?.shopCards || []).slice(0, 3).map((card, idx) => {
+        const fallback = fallbackShopPool[(shopCursor + idx) % fallbackShopPool.length];
+        return resolvePlanCard(node.id, card, `shop_${idx}`, fallback);
+      });
+      const shopCards = plannedShopCards.length > 0
+        ? plannedShopCards
+        : Array.from({ length: Math.min(3, fallbackShopPool.length) }, (_, idx) => {
+          const fallback = fallbackShopPool[(shopCursor + idx) % fallbackShopPool.length];
+          return { ...fallback };
+        });
+      shopCursor += 1;
+
+      payload = {
+        roomId: node.id,
+        nodeType: 'Shop',
+        shopCards,
+        objectRefs: {
+          cardImageIds: shopCards.map(card => card.imageObjectId).filter(Boolean) as string[],
+          cardSfxIds: shopCards.map(card => card.audioObjectId).filter(Boolean) as string[],
+        },
+      } satisfies ShopRoomContent;
+    } else if (node.type === 'Treasure') {
+      payload = {
+        roomId: node.id,
+        nodeType: 'Treasure',
+        treasureGold: Math.max(50, Number(plan?.treasureGold) || 100),
+      };
+    } else {
+      payload = {
+        roomId: node.id,
+        nodeType: 'Campfire',
+      };
+    }
+
+    rooms[node.id] = {
+      status: 'ready',
+      lastUpdatedAt: createdAt + nodeIndex,
+      payload: syncPayloadCardRefs(payload),
+    };
+  });
+
+  const starterCards = cardsWithObjects.slice(0, 3) as [Card, Card, Card];
+  const firstEnemy = enemiesWithObjects[0];
+  const firstCombatNode = getFirstCombatNode(node_map);
+  if (firstCombatNode && firstCombatNode.data == null) {
+    firstCombatNode.data = [{
+      ...firstEnemy,
+      id: `${firstEnemy.id}_enc_${firstCombatNode.id}_0`,
+      maxHp: firstEnemy.maxHp,
+      currentHp: firstEnemy.maxHp,
+    }];
   }
 
-  const firstEnemy = normalizeEnemy(parsed.firstEnemy, theme);
-  const roomMusicPrompt = parsed.roomMusicPrompt || 'tense strings over restrained percussion heartbeat';
-
-  const starterCards: [Card, Card, Card] = [strike, defend, uniqueCard];
   const bootstrap = {
     theme,
     starterCards,
     firstEnemy,
     roomMusicPrompt,
-    essentialSfxPrompts: parsed.essentialSfxPrompts || [
-      strike.audioPrompt || 'tempered steel slash through dry parchment',
-      defend.audioPrompt || 'solid shield impact with muffled iron ring',
-      uniqueCard.audioPrompt || 'surging arcane pulse with crisp impact',
+    essentialSfxPrompts: [
+      starterCards[0].audioPrompt || 'tempered steel slash through dry parchment',
+      starterCards[1].audioPrompt || 'solid shield impact with muffled iron ring',
+      starterCards[2].audioPrompt || 'surging arcane pulse with crisp impact',
       firstEnemy.audioPrompt || 'rusted blade swipe with chain rattle',
-    ]
+    ],
   };
-
-  const placeholderBoss = createPlaceholderBoss(theme);
-  const legacySeed: RunDataLegacy = {
-    theme,
-    cards: starterCards,
-    enemies: [firstEnemy],
-    boss: placeholderBoss,
-    synergies: [defaultSynergyFromCard(uniqueCard)],
-    roomMusicPrompt,
-    bossMusicPrompt: 'ominous low choir with heavy taiko pulse',
-  };
-
-  const node_map = generateFallbackNodeMap(legacySeed);
-  const firstCombatNode = getFirstCombatNode(node_map);
-  const firstRoomId = firstCombatNode?.id || 'room_start';
-  const objectManifest: Record<string, GeneratedObjectManifestEntry> = {};
-  const { playerPortraitImageId, playerSpriteImageId } = ensureSharedPlayerImageRefs(objectManifest, theme);
-  const firstRoomBackgroundImageId = buildObjectId(firstRoomId, 'image', 'background');
-  const firstRoomMusicId = buildObjectId(firstRoomId, 'audio', 'room_music');
-  ensureManifestEntry(objectManifest, {
-    id: firstRoomBackgroundImageId,
-    roomId: firstRoomId,
-    kind: 'image',
-    prompt: buildDefaultBattleBackgroundPrompt(theme),
-    imageType: 'background',
-    fileKey: buildObjectFileKey(firstRoomBackgroundImageId),
-  });
-  ensureManifestEntry(objectManifest, {
-    id: firstRoomMusicId,
-    roomId: firstRoomId,
-    kind: 'audio',
-    prompt: roomMusicPrompt,
-    audioSource: 'generic',
-    musicMode: 'room',
-    fileKey: buildObjectFileKey(firstRoomMusicId),
-  });
-
-  const cardsWithObjects = starterCards.map((card, idx) => registerCardObjects(
-    { objectManifest },
-    firstRoomId,
-    card,
-    `starter_${idx}`
-  )) as [Card, Card, Card];
-  const firstEnemyWithObjects = registerEnemyObjects(
-    { objectManifest },
-    firstRoomId,
-    firstEnemy,
-    'room'
-  );
-
-  if (firstCombatNode) {
-    firstCombatNode.data = firstEnemyWithObjects;
-  }
-
-  const rooms: RunDataV2['rooms'] = {};
-  const createdAt = nowTs();
-  node_map.forEach(node => {
-    rooms[node.id] = {
-      status: 'queued',
-      lastUpdatedAt: createdAt,
-    };
-  });
-
-  if (firstCombatNode) {
-    const firstPayload: CombatRoomContent = {
-      roomId: firstCombatNode.id,
-      nodeType: firstCombatNode.type === 'Elite' ? 'Elite' : 'Combat',
-      enemies: [firstEnemyWithObjects],
-      rewardCards: [cardsWithObjects[2]],
-      backgroundPrompt: buildDefaultBattleBackgroundPrompt(theme),
-      roomMusicPrompt,
-      objectRefs: {
-        backgroundImageId: firstRoomBackgroundImageId,
-        playerPortraitImageId,
-        playerSpriteImageId,
-        enemySpriteImageIds: [firstEnemyWithObjects.imageObjectId].filter(Boolean) as string[],
-        cardImageIds: cardsWithObjects.map(card => card.imageObjectId).filter(Boolean) as string[],
-        roomMusicId: firstRoomMusicId,
-        enemySfxIds: [firstEnemyWithObjects.audioObjectId].filter(Boolean) as string[],
-        cardSfxIds: cardsWithObjects.map(card => card.audioObjectId).filter(Boolean) as string[],
-      },
-    };
-    rooms[firstCombatNode.id] = {
-      status: 'ready',
-      lastUpdatedAt: createdAt,
-      payload: firstPayload,
-    };
-  }
 
   const runData: RunDataV2 = {
     version: 2,
@@ -1260,12 +2427,12 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     },
     theme,
     cards: cardsWithObjects,
-    enemies: [firstEnemyWithObjects],
-    boss: placeholderBoss,
-    synergies: [defaultSynergyFromCard(uniqueCard)],
+    enemies: enemiesWithObjects,
+    boss: bossWithObjects,
+    synergies,
     node_map,
     roomMusicPrompt,
-    bossMusicPrompt: 'ominous low choir with heavy taiko pulse',
+    bossMusicPrompt,
     objectManifest,
     rooms,
     bootstrap,
@@ -1289,12 +2456,12 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     responseSchema: {
       type: Type.OBJECT,
       properties: {
-        enemy: enemySchema,
-        rewardCards: { type: Type.ARRAY, items: cardSchema, minItems: 1, maxItems: 3 },
+        enemy: partialEnemySchema,
+        rewardCards: { type: Type.ARRAY, items: partialCardSchema, maxItems: 3 },
         backgroundPrompt: { type: Type.STRING, description: `Scene prompt for combat background. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}` },
         roomMusicPrompt: { type: Type.STRING },
       },
-      required: ['enemy', 'rewardCards', 'backgroundPrompt'],
+      required: ['enemy'],
     },
   };
 
@@ -1341,7 +2508,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       });
     }
 
-    const fallbackReward = runData.cards[2] || runData.cards[0];
+    const fallbackReward = stripCardMediaRefs(runData.cards[2] || runData.cards[0]);
     const rewardCardsRaw = (parsed.rewardCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
       ...fallbackReward,
       id: `${fallbackReward.id}_reward_${idx}`,
@@ -1405,7 +2572,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const manifestScope = { objectManifest: runData.objectManifest };
     const fallbackEnemy = runData.enemies[0] || normalizeEnemy(undefined, runData.theme);
     const backgroundPrompt = buildDefaultBattleBackgroundPrompt(runData.theme);
-    const fallbackRewardCards = [runData.cards[2] || runData.cards[0]].filter(Boolean);
+    const fallbackRewardCards = [stripCardMediaRefs(runData.cards[2] || runData.cards[0])].filter(Boolean);
     const rewardCards = fallbackRewardCards.map((card, idx) => registerCardObjects(
       manifestScope,
       node.id,
@@ -1474,16 +2641,17 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
 async function generateBossRoomPayload(runData: RunDataV2, node: MapNode): Promise<RoomContentPayload> {
   const config = {
     systemInstruction: `Generate content for a single roguelike boss room. Return strict JSON.
-Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.`,
+Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing the physical sound (action + material). Prefer warm, weighty impacts. No technical audio terms. No spoken dialogue in audioPrompt.
+Narrator voice hints should default to natural human delivery unless synthetic tone is explicitly required by theme.`,
     responseMimeType: 'application/json',
     responseSchema: {
       type: Type.OBJECT,
       properties: {
-        boss: bossSchema,
+        boss: partialBossSchema,
         backgroundPrompt: { type: Type.STRING, description: `Scene prompt for boss combat background. ${BATTLE_STAGE_FLOOR_PROMPT_RULE}` },
         bossMusicPrompt: { type: Type.STRING },
       },
-      required: ['boss', 'backgroundPrompt', 'bossMusicPrompt'],
+      required: ['boss'],
     },
   };
 
@@ -1516,7 +2684,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     };
     const boss = registerBossObjects(manifestScope, node.id, bossRaw);
     const backgroundPrompt = normalizeBattleBackgroundPrompt(parsed.backgroundPrompt, runData.theme);
-    const bossMusicPrompt = parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
+    const bossMusicPrompt = parsed.bossMusicPrompt || runData.bossMusicPrompt || 'ominous low choir over cavernous drones and muted war drums';
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
     const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
@@ -1557,7 +2725,7 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
     const manifestScope = { objectManifest: runData.objectManifest };
     const boss = registerBossObjects(manifestScope, node.id, runData.boss || createPlaceholderBoss(runData.theme));
     const backgroundPrompt = buildDefaultBattleBackgroundPrompt(runData.theme);
-    const bossMusicPrompt = runData.bossMusicPrompt || 'ominous low choir with heavy taiko pulse';
+    const bossMusicPrompt = runData.bossMusicPrompt || 'ominous low choir over cavernous drones and muted war drums';
     const backgroundImageId = buildObjectId(node.id, 'image', 'background');
     const bossMusicId = buildObjectId(node.id, 'audio', 'boss_music');
     const sharedPlayerImageRefs = ensureSharedPlayerImageRefs(runData.objectManifest, runData.theme);
@@ -1610,7 +2778,6 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
         footerText: { type: Type.STRING },
         choices: {
           type: Type.ARRAY,
-          minItems: 3,
           maxItems: 3,
           items: {
             type: Type.OBJECT,
@@ -1626,26 +2793,36 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
                   hpDelta: { type: Type.INTEGER },
                   maxHpDelta: { type: Type.INTEGER },
                   goldDelta: { type: Type.INTEGER },
-                  addCard: cardSchema,
+                  addCard: partialCardSchema,
                 },
               }
-            },
-            required: ['id', 'label', 'description', 'effects'],
+            }
           },
         },
       },
-      required: ['title', 'description', 'imagePrompt', 'choices'],
     },
   };
 
   const parts = [{ text: `Room type: Event. ${getRoomPromptContext(runData)} Build a thematic narrative event with exactly 3 meaningful choices.` }];
   try {
     const parsed = await requestStructuredJson<{
-      title: string;
-      description: string;
-      imagePrompt: string;
+      title?: string;
+      description?: string;
+      imagePrompt?: string;
       footerText?: string;
-      choices: EventChoicePayload[];
+      choices?: Array<{
+        id?: string;
+        label?: string;
+        description?: string;
+        icon?: unknown;
+        color?: unknown;
+        effects?: {
+          hpDelta?: unknown;
+          maxHpDelta?: unknown;
+          goldDelta?: unknown;
+          addCard?: Partial<Card>;
+        };
+      }>;
     }>('generateEventRoomPayload', config, parts);
     const eventImageId = buildObjectId(node.id, 'image', 'event_visual');
     ensureManifestEntry(runData.objectManifest, {
@@ -1656,24 +2833,87 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       imageType: 'background',
       fileKey: buildObjectFileKey(eventImageId),
     });
-    const normalizedChoices = (parsed.choices || []).slice(0, 3).map((choice, idx) => {
-      const addCard = choice.effects?.addCard
-        ? registerCardObjects({ objectManifest: runData.objectManifest }, node.id, choice.effects.addCard, `event_choice_${idx}`)
+    const fallbackCard = stripCardMediaRefs(runData.cards[2] || runData.cards[0] || createStrikeCard(runData.theme));
+    const fallbackChoices: EventChoicePayload[] = [
+      {
+        id: 'event-heal',
+        label: 'Take a steady breath',
+        description: 'Heal 8 HP.',
+        icon: 'fire',
+        color: 'red',
+        effects: { hpDelta: 8 },
+      },
+      {
+        id: 'event-gold',
+        label: 'Search the area',
+        description: 'Gain 20 gold.',
+        icon: 'gold',
+        color: 'orange',
+        effects: { goldDelta: 20 },
+      },
+      {
+        id: 'event-card',
+        label: 'Study the omen',
+        description: 'Add a card to your deck.',
+        icon: 'shield',
+        color: 'blue',
+        effects: { addCard: fallbackCard },
+      },
+    ];
+
+    const rawChoices = Array.isArray(parsed.choices) ? parsed.choices : [];
+    const normalizedChoices = [0, 1, 2].map((idx) => {
+      const raw = (rawChoices[idx] && typeof rawChoices[idx] === 'object')
+        ? rawChoices[idx] as Record<string, unknown>
+        : {};
+      const fallback = fallbackChoices[idx];
+      const rawEffects = (raw.effects && typeof raw.effects === 'object') ? raw.effects as Record<string, unknown> : {};
+
+      const addCardRaw = rawEffects.addCard && typeof rawEffects.addCard === 'object'
+        ? rawEffects.addCard as Partial<Card>
         : undefined;
+      const fallbackAddCard = fallback.effects.addCard
+        ? { ...fallback.effects.addCard, id: `${fallback.effects.addCard.id}_event_${idx}` }
+        : undefined;
+      const resolvedAddCardSource = addCardRaw
+        ? normalizeCard(
+          addCardRaw,
+          fallbackAddCard || {
+            ...fallbackCard,
+            id: `${fallbackCard.id}_event_${idx}`,
+          }
+        )
+        : fallbackAddCard;
+      const addCard = resolvedAddCardSource
+        ? registerCardObjects(
+          { objectManifest: runData.objectManifest },
+          node.id,
+          resolvedAddCardSource,
+          addCardRaw ? `event_choice_${idx}` : `event_fallback_${idx}`
+        )
+        : undefined;
+
       return {
-        ...choice,
+        id: typeof raw.id === 'string' && raw.id.trim().length > 0 ? raw.id : fallback.id,
+        label: typeof raw.label === 'string' && raw.label.trim().length > 0 ? raw.label : fallback.label,
+        description: typeof raw.description === 'string' && raw.description.trim().length > 0 ? raw.description : fallback.description,
+        icon: pickEventIcon(raw.icon, fallback.icon || 'shield'),
+        color: pickEventColor(raw.color, fallback.color || 'blue'),
         effects: {
-          ...(choice.effects || {}),
+          hpDelta: toOptionalNumber(rawEffects.hpDelta) ?? fallback.effects.hpDelta,
+          maxHpDelta: toOptionalNumber(rawEffects.maxHpDelta) ?? fallback.effects.maxHpDelta,
+          goldDelta: toOptionalNumber(rawEffects.goldDelta) ?? fallback.effects.goldDelta,
           addCard,
         },
-      };
+      } satisfies EventChoicePayload;
     });
+
     return {
       roomId: node.id,
       nodeType: 'Event',
-      title: parsed.title,
-      description: parsed.description,
-      imagePrompt: parsed.imagePrompt,
+      title: parsed.title || 'A Curious Encounter',
+      description: parsed.description || `You encounter an unusual scene shaped by ${runData.theme}.`,
+      imagePrompt: parsed.imagePrompt || `mysterious event scene in ${runData.theme} style, fantasy game art`,
       footerText: parsed.footerText || 'Choose wisely.',
       choices: normalizedChoices,
       objectRefs: {
@@ -1754,19 +2994,17 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       properties: {
         shopCards: {
           type: Type.ARRAY,
-          minItems: 3,
           maxItems: 3,
-          items: cardSchema,
+          items: partialCardSchema,
         },
       },
-      required: ['shopCards'],
     },
   };
 
   const parts = [{ text: `Room type: Shop. ${getRoomPromptContext(runData)} Create three purchasable cards.` }];
   try {
     const parsed = await requestStructuredJson<{ shopCards: Partial<Card>[] }>('generateShopRoomPayload', config, parts);
-    const fallback = runData.cards[2] || runData.cards[0];
+    const fallback = stripCardMediaRefs(runData.cards[2] || runData.cards[0]);
     const cardsRaw = (parsed.shopCards || []).slice(0, 3).map((card, idx) => normalizeCard(card, {
       ...fallback,
       id: `${fallback.id}_shop_${idx}`,
@@ -1795,9 +3033,12 @@ Audio rules: audioPrompt fields must be 4-14 word semantic fragments describing 
       const n = card.name.trim().toLowerCase();
       return n !== 'strike' && n !== 'defend';
     });
-    const cards = (fallbackPool.length > 0 ? fallbackPool : runData.cards).slice(0, 3).map((card, idx) => (
+    const cards = (fallbackPool.length > 0 ? fallbackPool : runData.cards)
+      .map(stripCardMediaRefs)
+      .slice(0, 3)
+      .map((card, idx) => (
       registerCardObjects({ objectManifest: runData.objectManifest }, node.id, card, `shop_fallback_${idx}`)
-    ));
+      ));
     return {
       roomId: node.id,
       nodeType: 'Shop',
@@ -1838,7 +3079,6 @@ export async function generateRoomContent(runData: RunDataV2, node: MapNode): Pr
 
 export async function preloadEssentialImages(runData: RunData | RunDataV2): Promise<void> {
   const theme = runData.theme;
-  const cards = runData.cards.slice(0, 3);
   const firstEnemy = runData.enemies[0];
   const imagePromises: Promise<void>[] = [];
 
@@ -1865,6 +3105,7 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
     const firstNode = getFirstCombatNode(runData.node_map);
     const roomPayload = firstNode ? runData.rooms[firstNode.id]?.payload : undefined;
     const refs = roomPayload?.objectRefs;
+    const starterCards = runData.bootstrap?.starterCards || runData.cards.slice(0, 3);
 
     imagePromises.push(preloadImageWithManifest(
       roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite' || roomPayload.nodeType === 'Boss')
@@ -1900,34 +3141,53 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
       }
     ));
 
-    if (firstEnemy?.imagePrompt) {
+    if (roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite')) {
+      roomPayload.enemies.forEach((enemy, index) => {
+        imagePromises.push(preloadImageWithManifest(
+          enemy.imagePrompt ? buildEnemySpritePrompt(enemy.imagePrompt) : undefined,
+          'character',
+          enemy.imageObjectId || refs?.enemySpriteImageIds?.[index] || refs?.enemySpriteImageId,
+          (url) => {
+            enemy.imageUrl = url;
+            const enemySpriteImageUrls = [...(roomPayload.objectUrls?.enemySpriteImageUrls || [])];
+            enemySpriteImageUrls[index] = url;
+            roomPayload.objectUrls = {
+              ...(roomPayload.objectUrls || {}),
+              enemySpriteImageUrl: index === 0 ? url : roomPayload.objectUrls?.enemySpriteImageUrl,
+              enemySpriteImageUrls,
+            };
+          }
+        ));
+      });
+    } else if (roomPayload && roomPayload.nodeType === 'Boss') {
+      imagePromises.push(preloadImageWithManifest(
+        roomPayload.boss.imagePrompt ? buildBossSpritePrompt(roomPayload.boss.imagePrompt) : undefined,
+        'character',
+        roomPayload.boss.imageObjectId || refs?.bossSpriteImageId,
+        (url) => {
+          roomPayload.boss.imageUrl = url;
+          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), bossSpriteImageUrl: url };
+        }
+      ));
+    } else if (firstEnemy?.imagePrompt) {
       imagePromises.push(preloadImageWithManifest(
         buildEnemySpritePrompt(firstEnemy.imagePrompt),
         'character',
         firstEnemy.imageObjectId || refs?.enemySpriteImageIds?.[0] || refs?.enemySpriteImageId,
         (url) => {
           firstEnemy.imageUrl = url;
-          if (roomPayload) {
-            const enemySpriteImageUrls = [...(roomPayload.objectUrls?.enemySpriteImageUrls || [])];
-            enemySpriteImageUrls[0] = url;
-            roomPayload.objectUrls = {
-              ...(roomPayload.objectUrls || {}),
-              enemySpriteImageUrl: url,
-              enemySpriteImageUrls,
-            };
-          }
         }
       ));
     }
 
-    cards.forEach((card, index) => {
+    starterCards.forEach((card, index) => {
       imagePromises.push(preloadImageWithManifest(
         card.imagePrompt,
         'asset',
-        card.imageObjectId || refs?.cardImageIds?.[index],
+        card.imageObjectId,
         (url) => {
           card.imageUrl = url;
-          if (roomPayload) {
+          if (roomPayload && index < 3) {
             const cardImageUrls = [...(roomPayload.objectUrls?.cardImageUrls || [])];
             cardImageUrls[index] = url;
             roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), cardImageUrls };
@@ -1935,7 +3195,25 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
         }
       ));
     });
+
+    if (roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite') && roomPayload.rewardCards) {
+      roomPayload.rewardCards.forEach((card, idx) => {
+        imagePromises.push(preloadImageWithManifest(
+          card.imagePrompt,
+          'asset',
+          card.imageObjectId || roomPayload.objectRefs?.cardImageIds?.[idx],
+          (url) => {
+            card.imageUrl = url;
+            const cardImageUrls = [...(roomPayload.objectUrls?.cardImageUrls || [])];
+            const offset = starterCards.length + idx;
+            cardImageUrls[offset] = url;
+            roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), cardImageUrls };
+          }
+        ));
+      });
+    }
   } else {
+    const cards = runData.cards.slice(0, 3);
     imagePromises.push(preloadImageWithManifest(buildDefaultBattleBackgroundPrompt(theme), 'background'));
     imagePromises.push(preloadImageWithManifest(PLAYER_PORTRAIT_PROMPT, 'character'));
     imagePromises.push(preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character'));
@@ -2058,15 +3336,42 @@ export function applyRoomContentToRunData(
   payload: RoomContentPayload,
   manifestPatch?: Record<string, GeneratedObjectManifestEntry>
 ): RunDataV2 {
+  const mergeManifestEntry = (
+    existing: GeneratedObjectManifestEntry | undefined,
+    incoming: GeneratedObjectManifestEntry,
+  ): GeneratedObjectManifestEntry => {
+    if (!existing) return incoming;
+
+    if (existing.status === 'ready' && incoming.status !== 'ready') {
+      return existing;
+    }
+    if (incoming.status === 'ready' && existing.status !== 'ready') {
+      return incoming;
+    }
+
+    const existingUpdatedAt = existing.updatedAt ?? existing.createdAt ?? 0;
+    const incomingUpdatedAt = incoming.updatedAt ?? incoming.createdAt ?? 0;
+    if (incomingUpdatedAt > existingUpdatedAt) {
+      return incoming;
+    }
+    if (existingUpdatedAt > incomingUpdatedAt) {
+      return existing;
+    }
+
+    return { ...existing, ...incoming };
+  };
+
+  const mergedManifest: Record<string, GeneratedObjectManifestEntry> = { ...runData.objectManifest };
+  Object.entries(manifestPatch || {}).forEach(([id, entry]) => {
+    mergedManifest[id] = mergeManifestEntry(mergedManifest[id], entry);
+  });
+
   const now = nowTs();
   const next = {
     ...runData,
     cards: runData.cards,
     enemies: runData.enemies,
-    objectManifest: {
-      ...runData.objectManifest,
-      ...(manifestPatch || {}),
-    },
+    objectManifest: mergedManifest,
     rooms: {
       ...runData.rooms,
       [roomId]: {

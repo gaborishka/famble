@@ -30,7 +30,6 @@ import { DefeatScreen } from './DefeatScreen';
 import type { DefeatStats } from './DefeatScreen';
 import { VictoryScreen } from './VictoryScreen';
 import type { VictoryStats } from './VictoryScreen';
-import { sanitizeCardMediaRefs } from '../../utils/cardMediaSanitizer';
 
 interface RunManagerProps {
   runData: RunData;
@@ -123,7 +122,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   useEffect(() => {
     setActiveRunData(runData);
+    setCurrentNodeId(null);
+    setView('map');
     setActiveRoomPayload(null);
+    setRoomGate(null);
     if (isRunDataV2(runData)) {
       runDataRef.current = runData;
     } else {
@@ -137,14 +139,11 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     }
 
     if (activeRunData.node_map) {
-      setNodes(prevNodes => {
-        const prevCompleted = new Map(prevNodes.map(node => [node.id, node.completed]));
-        return activeRunData.node_map.map(node => ({
-          ...node,
-          nextNodes: node.nextNodes ?? [],
-          completed: prevCompleted.get(node.id) ?? Boolean(node.completed),
-        }));
-      });
+      setNodes(activeRunData.node_map.map(node => ({
+        ...node,
+        nextNodes: node.nextNodes ?? [],
+        completed: node.completed === true,
+      })));
     } else {
       setNodes(generateFallbackNodeMap(activeRunData));
     }
@@ -165,7 +164,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     const orchestrator = new RoomGenerationOrchestrator({
       getRunData: () => runDataRef.current || runData,
       setRunData: (updater) => updateRunDataV2(updater),
-      maxConcurrent: 1,
+      maxConcurrent: 2,
     });
     orchestratorRef.current = orchestrator;
     return () => {
@@ -190,9 +189,17 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
 
   const currentFloor = useMemo(() => calculateCurrentFloor(nodes, totalFloors), [nodes, totalFloors]);
 
+  const hydrateCardImage = useCallback((card: Card): Card => {
+    if (card.imageUrl) return card;
+    const resolved = resolveManifestObjectUrl(activeRunData, card.imageObjectId);
+    if (!resolved) return card;
+    return { ...card, imageUrl: resolved };
+  }, [activeRunData]);
+
   const getRewardSource = (): Card[] => {
-    const rewardPool = activeRunData.cards.filter(card => !isBasicStarterCard(card));
-    return rewardPool.length > 0 ? rewardPool : activeRunData.cards;
+    const cards = activeRunData.cards.map(hydrateCardImage);
+    const rewardPool = cards.filter(card => !isBasicStarterCard(card));
+    return rewardPool.length > 0 ? rewardPool : cards;
   };
 
   const getRandomRewardCards = (): Card[] => {
@@ -208,8 +215,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   };
 
   const availableCards = useMemo(() => {
-    return activeRunData.cards.filter(c => !isBasicStarterCard(c));
-  }, [activeRunData.cards]);
+    return activeRunData.cards
+      .map(hydrateCardImage)
+      .filter(c => !isBasicStarterCard(c));
+  }, [activeRunData.cards, hydrateCardImage]);
 
   // ── Node Selection ──
 
@@ -242,18 +251,83 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     return [];
   }, [getRoomPayload]);
 
+  const roomHasPendingAssets = useCallback((payload: RoomContentPayload | null | undefined): boolean => {
+    if (!payload || !isRunDataV2(activeRunData)) return false;
+    const manifest = activeRunData.objectManifest;
+    const ids = new Set<string>();
+    const add = (id?: string) => {
+      if (id) ids.add(id);
+    };
+    const addMany = (list?: string[]) => {
+      list?.forEach(id => add(id));
+    };
+
+    add(payload.objectRefs?.backgroundImageId);
+    add(payload.objectRefs?.playerPortraitImageId);
+    add(payload.objectRefs?.playerSpriteImageId);
+    add(payload.objectRefs?.enemySpriteImageId);
+    addMany(payload.objectRefs?.enemySpriteImageIds);
+    add(payload.objectRefs?.bossSpriteImageId);
+    add(payload.objectRefs?.eventImageId);
+    addMany(payload.objectRefs?.cardImageIds);
+    add(payload.objectRefs?.roomMusicId);
+    add(payload.objectRefs?.bossMusicId);
+    add(payload.objectRefs?.enemySfxId);
+    addMany(payload.objectRefs?.enemySfxIds);
+    add(payload.objectRefs?.bossSfxId);
+    add(payload.objectRefs?.bossTtsId);
+    addMany(payload.objectRefs?.cardSfxIds);
+
+    if (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') {
+      payload.enemies.forEach(enemy => {
+        add(enemy.imageObjectId);
+        add(enemy.audioObjectId);
+      });
+      (payload.rewardCards || []).forEach(card => {
+        add(card.imageObjectId);
+        add(card.audioObjectId);
+      });
+    }
+    if (payload.nodeType === 'Boss') {
+      add(payload.boss.imageObjectId);
+      add(payload.boss.audioObjectId);
+      add(payload.boss.narratorAudioObjectId);
+    }
+    if (payload.nodeType === 'Event') {
+      payload.choices.forEach(choice => {
+        add(choice.effects?.addCard?.imageObjectId);
+        add(choice.effects?.addCard?.audioObjectId);
+      });
+    }
+    if (payload.nodeType === 'Shop') {
+      payload.shopCards.forEach(card => {
+        add(card.imageObjectId);
+        add(card.audioObjectId);
+      });
+    }
+
+    for (const id of ids) {
+      if (manifest[id]?.status !== 'ready') {
+        return true;
+      }
+    }
+    return false;
+  }, [activeRunData]);
+
   const ensureNodeReady = useCallback(async (node: MapNode): Promise<RoomContentPayload | null | false> => {
     if (!isRunDataV2(activeRunData)) return null;
 
     const orchestrator = orchestratorRef.current;
     if (!orchestrator) return null;
 
+    const existingPayload = getRoomPayload(node.id);
+    const needsAssets = existingPayload ? roomHasPendingAssets(existingPayload) : true;
     const strictMode = activeRunData.generationSettings.mode === 'test_on_demand';
     const criticalCombatNode = node.type === 'Combat' || node.type === 'Elite' || node.type === 'Boss';
-    const shouldGate = strictMode || criticalCombatNode;
+    const shouldGate = needsAssets && (strictMode || criticalCombatNode);
 
     if (shouldGate) {
-      setRoomGate({ node, status: 'loading', message: 'Generating room content...' });
+      setRoomGate({ node, status: 'loading', message: 'Preparing room assets...' });
     }
 
     const payload = await orchestrator.ensureRoomReady(node);
@@ -263,12 +337,12 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     }
 
     if (shouldGate) {
-      setRoomGate({ node, status: 'failed', message: 'Room generation failed. Retry to continue.' });
+      setRoomGate({ node, status: 'failed', message: 'Failed to prepare room assets. Retry to continue.' });
       return false;
     }
 
     return null;
-  }, [activeRunData]);
+  }, [activeRunData, getRoomPayload, roomHasPendingAssets]);
 
   const handleNodeSelect = async (node: MapNode) => {
     const ensuredPayload = await ensureNodeReady(node);
@@ -344,9 +418,9 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     };
     setRunStats(nextRunStats);
 
-    const activeBossId = isRunDataV2(activeRunData) ? activeRunData.boss?.id : activeRunData.boss.id;
-    if (activeBossId && currentEnemies.some(e => e.id === activeBossId)) {
-      const boss = currentEnemies.find(e => e.id === activeBossId) as Boss;
+    const bossRoomActive = Boolean((activeRoomPayload || getRoomPayload(currentNodeId))?.nodeType === 'Boss');
+    if (bossRoomActive) {
+      const boss = (currentEnemies[0] || (isRunDataV2(activeRunData) ? activeRunData.boss : activeRunData.boss)) as Boss;
       const imageUrl = (isRunDataV2(activeRunData) ? activeRunData.boss?.imageUrl : null)
         || boss?.imageUrl
         || resolveManifestObjectUrl(activeRunData, boss?.imageObjectId);
@@ -372,7 +446,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       let nextRewardCards = getRandomRewardCards();
       const payload = activeRoomPayload || getRoomPayload(currentNodeId);
       if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') && payload.rewardCards && payload.rewardCards.length > 0) {
-        nextRewardCards = sanitizeCardMediaRefs(payload.rewardCards.slice(0, 3));
+        nextRewardCards = payload.rewardCards.slice(0, 3).map(hydrateCardImage);
       }
       const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
 
@@ -490,9 +564,10 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   useEffect(() => {
     if (!isRunDataV2(activeRunData)) return;
     if (view !== 'map') return;
-    if (activeRunData.generationSettings.mode !== 'fast_start') return;
     if (!orchestratorRef.current) return;
-    const depth = Math.max(1, activeRunData.generationSettings.prefetchDepth ?? 2);
+    const depth = activeRunData.generationSettings.mode === 'fast_start'
+      ? Math.max(2, nodes.length)
+      : Math.max(1, activeRunData.generationSettings.prefetchDepth ?? 2);
     orchestratorRef.current.prefetchFrom(currentNodeId, nodes, depth);
   }, [activeRunData, currentNodeId, nodes, view]);
 
@@ -505,10 +580,25 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }, [currentNodeId, activeRunData, getRoomPayload]);
 
   const currentRoomPayload = activeRoomPayload || getRoomPayload(currentNodeId);
-  const currentEventPayload: EventRoomContent | null =
-    currentRoomPayload && currentRoomPayload.nodeType === 'Event' ? currentRoomPayload : null;
-  const currentShopPayload: ShopRoomContent | null =
-    currentRoomPayload && currentRoomPayload.nodeType === 'Shop' ? currentRoomPayload : null;
+  const currentEventPayload: EventRoomContent | null = useMemo(() => {
+    if (!currentRoomPayload || currentRoomPayload.nodeType !== 'Event') return null;
+    return {
+      ...currentRoomPayload,
+      choices: currentRoomPayload.choices.map(choice => ({
+        ...choice,
+        effects: choice.effects?.addCard
+          ? { ...choice.effects, addCard: hydrateCardImage(choice.effects.addCard) }
+          : choice.effects,
+      })),
+    };
+  }, [currentRoomPayload, hydrateCardImage]);
+  const currentShopPayload: ShopRoomContent | null = useMemo(() => {
+    if (!currentRoomPayload || currentRoomPayload.nodeType !== 'Shop') return null;
+    return {
+      ...currentRoomPayload,
+      shopCards: currentRoomPayload.shopCards.map(hydrateCardImage),
+    };
+  }, [currentRoomPayload, hydrateCardImage]);
 
   const renderWithRoomGate = (content: React.ReactNode) => (
     <>
@@ -516,12 +606,12 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       {roomGate && (
         <div className="fixed inset-0 z-[120] bg-slate-950/85 backdrop-blur-sm flex items-center justify-center px-4">
           <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900/95 p-6 text-white">
-            <h3 className="text-2xl font-bold mb-2">Room Generation</h3>
+            <h3 className="text-2xl font-bold mb-2">Room Assets</h3>
             <p className="text-slate-300 mb-5">{roomGate.message}</p>
             {roomGate.status === 'loading' ? (
               <div className="flex items-center gap-3 text-orange-300">
                 <span className="h-5 w-5 rounded-full border-2 border-orange-300 border-b-transparent animate-spin" />
-                <span>Preparing room assets and data...</span>
+                <span>Loading room visuals and audio...</span>
               </div>
             ) : (
               <div className="flex gap-3">
@@ -581,9 +671,8 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    const cardsToShow = sanitizeCardMediaRefs(
-      rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3)
-    );
+    const cardsToShow = (rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3))
+      .map(hydrateCardImage);
     const statsToShow: RewardStats = rewardStats ?? {
       damageDealt: 0,
       turns: 1,

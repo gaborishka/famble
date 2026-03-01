@@ -5,13 +5,14 @@ import {
   preloadEssentialImages,
   preloadFirstCombatImages,
   preloadBackgroundImages,
+  repairRunDataCardMediaRefs,
   setCurrentRunId,
 } from '../../services/geminiService';
 import { preloadEssentialAudio, preloadRunAudio } from '../../services/audioService';
 import { processDocumentOCR, buildEnhancedPrompt, isUrlInput, MistralDocumentInput } from '../../services/mistralService';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUp, Globe, ArrowRight, Sparkles, FileText, Check } from 'lucide-react';
-import { sanitizeRunDataCardMedia } from '../../utils/cardMediaSanitizer';
+import { Logo } from '../common/Logo';
 
 interface GeneratorProps {
   onGenerated: (data: RunData) => void;
@@ -28,6 +29,24 @@ interface LoadingView {
   caption: string;
   finePrint: string;
 }
+
+const prepareRunForReplay = (runData: RunData): RunData => {
+  if (isRunDataV2(runData)) {
+    return {
+      ...runData,
+      node_map: runData.node_map.map(node => ({ ...node, completed: false })),
+    };
+  }
+
+  if (!runData.node_map) {
+    return runData;
+  }
+
+  return {
+    ...runData,
+    node_map: runData.node_map.map(node => ({ ...node, completed: false })),
+  };
+};
 
 const defaultLoadingView: LoadingView = {
   title: 'Generating Run Data...',
@@ -211,8 +230,8 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       setCurrentRunId(runId);
       const res = await fetch(`/runs/${runId}/run-data.json`);
       if (!res.ok) throw new Error('Failed to load run data');
-      let runData = await res.json() as RunData;
-      runData = sanitizeRunDataCardMedia(runData);
+      const loadedRunData = await res.json() as RunData;
+      const runData = repairRunDataCardMediaRefs(prepareRunForReplay(loadedRunData));
 
       if (isRunDataV2(runData)) {
         runData.generationSettings = runData.generationSettings || { mode: 'fast_start', prefetchDepth: 2 };
@@ -262,40 +281,38 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       // Mistral Document AI preprocessing
       if (mistralInput) {
         setLoadingMessage('Analyzing Document...');
-        try {
-          const extraction = await processDocumentOCR(mistralInput);
-          if (extraction && extraction.markdown.trim().length > 0) {
-            console.log(
-              `Mistral OCR: extracted ${extraction.pageCount} pages, ` +
-              `${extraction.markdown.length} chars, ` +
-              `annotations: ${extraction.annotations ? 'yes' : 'no'}`
-            );
-            effectivePrompt = buildEnhancedPrompt(finalPrompt, extraction);
-            skipFileData = true;
-          } else {
-            console.warn('Mistral OCR returned empty result, falling back to direct Gemini');
-          }
-        } catch (mistralErr) {
-          console.warn('Mistral OCR failed, falling back to direct Gemini:', mistralErr);
+        const extraction = await processDocumentOCR(mistralInput);
+        if (extraction && extraction.markdown.trim().length > 0) {
+          console.log(
+            `Mistral OCR: extracted ${extraction.pageCount} pages, ` +
+            `${extraction.markdown.length} chars, ` +
+            `annotations: ${extraction.annotations ? 'yes' : 'no'}`
+          );
+          effectivePrompt = buildEnhancedPrompt(finalPrompt, extraction);
+          skipFileData = true;
+        } else {
+          throw new Error(
+            'Document analysis failed or returned empty content. Please try another file/URL or check MISTRAL_API_KEY.'
+          );
         }
       }
 
       setLoadingMessage('Generating Run Data...');
-      const runData = await generateRunBootstrap(
+      const generatedRunData = await generateRunBootstrap(
         effectivePrompt,
         fileData,
         { mode: generationMode, prefetchDepth: 2 },
         skipFileData ? { skipFileData: true } : undefined,
       );
-      const sanitizedRunData = sanitizeRunDataCardMedia(runData);
+      const runData = repairRunDataCardMediaRefs(generatedRunData);
 
       setLoadingMessage('Preloading Room 1 Graphics...');
-      await preloadEssentialImages(sanitizedRunData);
+      await preloadEssentialImages(runData);
 
       setLoadingMessage('Synthesizing Audio Magic...');
-      await preloadEssentialAudio(sanitizedRunData);
+      await preloadEssentialAudio(runData);
 
-      onGenerated(sanitizedRunData);
+      onGenerated(runData);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to generate game data. Please try again.');
@@ -316,8 +333,8 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       />
 
       {/* Header */}
-      <header className="w-full px-12 py-8 flex justify-between items-center z-10 relative">
-        <div className="text-2xl font-bold tracking-widest uppercase">Famble</div>
+      <header className="w-full px-12 py-8 flex justify-between items-start z-10 relative">
+        <Logo className="w-48 sm:w-64" />
         <div className="flex gap-8 text-sm text-slate-400">
           <button className="hover:text-white transition-colors tracking-wide">Explore</button>
           <button className="hover:text-white transition-colors tracking-wide">Log in</button>
@@ -346,26 +363,24 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
               <button
                 type="button"
                 onClick={() => setGenerationMode('fast_start')}
-                className={`rounded-xl border px-4 py-3 text-left transition-colors ${
-                  generationMode === 'fast_start'
-                    ? 'border-orange-400 bg-orange-500/15 text-orange-100'
-                    : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
-                }`}
+                className={`rounded-xl border px-4 py-3 text-left transition-colors ${generationMode === 'fast_start'
+                  ? 'border-orange-400 bg-orange-500/15 text-orange-100'
+                  : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
+                  }`}
               >
                 <div className="font-semibold">Fast Start</div>
-                <div className="text-xs mt-1 text-slate-400">Launch first fight ASAP, prefetch next rooms in background.</div>
+                <div className="text-xs mt-1 text-slate-400">Build full run logic upfront, then aggressively prefetch room assets in background.</div>
               </button>
               <button
                 type="button"
                 onClick={() => setGenerationMode('test_on_demand')}
-                className={`rounded-xl border px-4 py-3 text-left transition-colors ${
-                  generationMode === 'test_on_demand'
-                    ? 'border-sky-400 bg-sky-500/15 text-sky-100'
-                    : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
-                }`}
+                className={`rounded-xl border px-4 py-3 text-left transition-colors ${generationMode === 'test_on_demand'
+                  ? 'border-sky-400 bg-sky-500/15 text-sky-100'
+                  : 'border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500'
+                  }`}
               >
                 <div className="font-semibold">Test On-Demand</div>
-                <div className="text-xs mt-1 text-slate-400">Strict gating: each room is generated before it can open.</div>
+                <div className="text-xs mt-1 text-slate-400">Build full run logic upfront, then prefetch assets only near the player path.</div>
               </button>
             </div>
           </div>

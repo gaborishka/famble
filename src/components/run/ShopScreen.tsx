@@ -3,7 +3,6 @@ import { Card, Relic, ShopRoomContent } from '../../../shared/types/game';
 import { motion, AnimatePresence } from 'motion/react';
 import { PlayerHUD } from './PlayerHUD';
 import { CardComponent } from '../combat/CardComponent';
-import { sanitizeCardMediaRefs } from '../../utils/cardMediaSanitizer';
 
 // ── Shop Relic Definitions ──
 
@@ -147,9 +146,8 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
   // Generate shop inventory once per mount
   const shopCards = useMemo(() => {
     if (roomShop?.shopCards && roomShop.shopCards.length > 0) {
-      const sanitizedRoomCards = sanitizeCardMediaRefs(roomShop.shopCards.slice(0, 3));
-      return sanitizedRoomCards.map((card, idx) => ({
-        card: { ...card, id: `shop-room-${idx}-${card.id}-${Date.now()}` },
+      return roomShop.shopCards.slice(0, 3).map((card, idx) => ({
+        card: { ...card, id: `shop-room-${idx}-${card.id}` },
         price: getCardPrice(card),
       }));
     }
@@ -158,8 +156,8 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
       return n !== 'strike' && n !== 'defend';
     });
     const shuffled = [...pool].sort(() => Math.random() - 0.5);
-    return sanitizeCardMediaRefs(shuffled.slice(0, 3)).map(card => ({
-      card: { ...card, id: `shop-${card.id}-${Date.now()}` },
+    return shuffled.slice(0, 3).map((card, idx) => ({
+      card: { ...card, id: `shop-${idx}-${card.id}` },
       price: getCardPrice(card),
     }));
   }, [availableCards, roomShop]);

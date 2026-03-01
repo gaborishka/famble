@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Famble Logo Variations</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Rajdhani:wght@600;700&display=swap');
+
+        body {
+            background-color: #1a1e28; /* matching the image dark slate background */
+            color: #ffffff;
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 60px;
+            align-items: center;
+        }
+
+        h1 {
+            color: #8fa0c0;
+            font-weight: normal;
+            font-size: 1.2rem;
+            margin-bottom: 20px;
+            text-align: center;
+            border-bottom: 1px solid #333b4f;
+            padding-bottom: 10px;
+            width: 100%;
+        }
+
+        .variant-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            width: 100%;
+            max-width: 800px;
+        }
+
+        .logo-box {
+            background-color: #151820; /* slightly darker to frame it */
+            border: 1px solid #2a3142;
+            border-radius: 12px;
+            padding: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* The uploaded image has dark background and some padding, we will just use it as is */
+        .icon {
+            width: 300px;
+            height: auto;
+            object-fit: contain;
+        }
+
+        /* Typography Styles */
+        .text-oswald {
+            font-family: 'Oswald', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .text-rajdhani {
+            font-family: 'Rajdhani', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+        }
+
+        .color-primary {
+            color: #ffffff; /* pure white */
+        }
+
+        .color-accent-purple {
+            color: #a46bb5; /* mystic purple from the cards */
+        }
+        
+        .color-accent-blue {
+            color: #5c8fca; /* slate blue from the cards */
+        }
+        
+        .color-accent-orange {
+            color: #d16147; /* mute orange from the cards */
+        }
+
+        /* Variation 1: Horizontal Layout */
+        .layout-horizontal {
+            flex-direction: row;
+            gap: 0px;
+        }
+        
+        .layout-horizontal .icon {
+            width: 250px;
+            margin-right: -20px; /* pull text closer due to image paddings */
+        }
+
+        .layout-horizontal .text {
+            font-size: 4rem;
+            font-weight: 700;
+        }
+
+        /* Variation 2: Vertical / Stacked */
+        .layout-vertical {
+            flex-direction: column;
+            gap: 0px;
+        }
+
+        .layout-vertical .icon {
+            width: 350px;
+            margin-bottom: -30px; /* pull text closer due to image paddings */
+        }
+
+        .layout-vertical .text {
+            font-size: 4.5rem;
+            font-weight: 700;
+        }
+
+        /* Variation 3: App Icon / Compact */
+        .layout-compact {
+            flex-direction: column;
+            position: relative;
+        }
+        
+        .layout-compact .icon {
+            width: 200px;
+        }
+        
+        .layout-compact .text {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-top: -30px;
+            z-index: 10;
+            text-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+
+        .sparkle {
+            text-shadow: 0 0 15px rgba(164, 107, 181, 0.8);
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="variant-container">
+        <h1>Варіант 1: Горизонтальний логатип (Шрифт Oswald)</h1>
+        <div class="logo-box layout-horizontal">
+            <img src="/famble-logo-base.png" alt="Icon" class="icon">
+            <div class="text text-oswald color-primary">
+                F<span class="color-accent-blue">A</span>MBL<span class="color-accent-purple sparkle">E</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="variant-container">
+        <h1>Варіант 2: Вертикальний / Центрований (Шрифт Rajdhani)</h1>
+        <div class="logo-box layout-vertical">
+            <img src="/famble-logo-base.png" alt="Icon" class="icon">
+            <div class="text text-rajdhani color-primary">
+                F<span class="color-accent-orange">A</span>MBLE
+            </div>
+        </div>
+    </div>
+
+    <div class="variant-container">
+        <h1>Варіант 3: Компактна Іконка Додатку</h1>
+        <div class="logo-box layout-compact">
+            <img src="/famble-logo-base.png" alt="Icon" class="icon">
+            <div class="text text-oswald color-primary">
+                FAMBLE
+            </div>
+        </div>
+    </div>
+
+    <div style="max-width: 800px; text-align: center; color: #8fa0c0; line-height: 1.6;">
+        <p>Ця сторінка створена тимчасово за допомогою CSS, щоб показати, як можна поєднати згенеровану векторну іконку з сучасною типографікою (поки інструмент генерації зображень знаходиться на очікуванні (rate limit)).</p>
+    </div>
+
+</body>
+</html>

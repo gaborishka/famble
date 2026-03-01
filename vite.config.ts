@@ -178,6 +178,48 @@ const localRunManagerPlugin = (): Plugin => ({
       }
     });
 
+    server.middlewares.use('/api/mistral-chat', (req, res, next) => {
+      if (req.method === 'POST') {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        req.on('end', async () => {
+          try {
+            const body = Buffer.concat(chunks).toString('utf-8');
+            const requestData = JSON.parse(body);
+
+            const mistralApiKey = loadEnv('development', '.', '').MISTRAL_API_KEY;
+            if (!mistralApiKey) {
+              res.statusCode = 500;
+              res.end(JSON.stringify({ error: 'MISTRAL_API_KEY is not configured' }));
+              return;
+            }
+
+            const mistralRes = await fetch('https://api.mistral.ai/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${mistralApiKey}`,
+              },
+              body: JSON.stringify(requestData),
+            });
+
+            const mistralData = await mistralRes.text();
+            res.statusCode = mistralRes.status;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(mistralData);
+          } catch (e) {
+            console.error('Error proxying Mistral chat:', e);
+            res.statusCode = 500;
+            res.end(JSON.stringify({ error: 'Mistral chat proxy error' }));
+          }
+        });
+      } else {
+        next();
+      }
+    });
+
     server.middlewares.use('/api/check-file', (req, res, next) => {
       if (req.method === 'GET') {
         try {

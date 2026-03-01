@@ -9,6 +9,13 @@ interface ErrorBoundaryState {
 }
 
 export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  declare props: Readonly<ErrorBoundaryProps>;
+  declare setState: (
+    state:
+      | Partial<ErrorBoundaryState>
+      | ((prevState: ErrorBoundaryState, props: Readonly<ErrorBoundaryProps>) => Partial<ErrorBoundaryState> | null),
+    callback?: () => void
+  ) => void;
   state: ErrorBoundaryState = { hasError: false };
 
   static getDerivedStateFromError(): ErrorBoundaryState {
