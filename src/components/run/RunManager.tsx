@@ -30,6 +30,7 @@ import { DefeatScreen } from './DefeatScreen';
 import type { DefeatStats } from './DefeatScreen';
 import { VictoryScreen } from './VictoryScreen';
 import type { VictoryStats } from './VictoryScreen';
+import { sanitizeCardMediaRefs } from '../../utils/cardMediaSanitizer';
 
 interface RunManagerProps {
   runData: RunData;
@@ -199,31 +200,6 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
     return [...source]
       .sort(() => Math.random() - 0.5)
       .slice(0, Math.min(3, source.length));
-  };
-
-  const normalizeRewardDisplayCards = (cards: Card[]): Card[] => {
-    const seenImageIds = new Map<string, string | undefined>();
-    return cards.map(card => {
-      const imageObjectId = card.imageObjectId;
-      if (!imageObjectId) return card;
-
-      const priorPrompt = seenImageIds.get(imageObjectId);
-      if (priorPrompt === undefined) {
-        seenImageIds.set(imageObjectId, card.imagePrompt);
-        return card;
-      }
-
-      // Legacy guard: one payload may accidentally reuse the same object id for multiple different cards.
-      if (priorPrompt !== card.imagePrompt) {
-        return {
-          ...card,
-          imageObjectId: undefined,
-          imageUrl: undefined,
-        };
-      }
-
-      return card;
-    });
   };
 
   const clearRewardState = () => {
@@ -396,7 +372,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
       let nextRewardCards = getRandomRewardCards();
       const payload = activeRoomPayload || getRoomPayload(currentNodeId);
       if (payload && (payload.nodeType === 'Combat' || payload.nodeType === 'Elite') && payload.rewardCards && payload.rewardCards.length > 0) {
-        nextRewardCards = normalizeRewardDisplayCards(payload.rewardCards.slice(0, 3));
+        nextRewardCards = sanitizeCardMediaRefs(payload.rewardCards.slice(0, 3));
       }
       const nextFloor = calculateCurrentFloor(updatedNodes, totalFloors);
 
@@ -605,7 +581,7 @@ export const RunManager: React.FC<RunManagerProps> = ({ runData, onReset }) => {
   }
 
   if (view === 'reward') {
-    const cardsToShow = normalizeRewardDisplayCards(
+    const cardsToShow = sanitizeCardMediaRefs(
       rewardCards.length > 0 ? rewardCards : getRewardSource().slice(0, 3)
     );
     const statsToShow: RewardStats = rewardStats ?? {

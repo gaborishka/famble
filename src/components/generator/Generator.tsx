@@ -11,6 +11,7 @@ import { preloadEssentialAudio, preloadRunAudio } from '../../services/audioServ
 import { processDocumentOCR, buildEnhancedPrompt, isUrlInput, MistralDocumentInput } from '../../services/mistralService';
 import { motion, AnimatePresence } from 'motion/react';
 import { FileUp, Globe, ArrowRight, Sparkles, FileText, Check } from 'lucide-react';
+import { sanitizeRunDataCardMedia } from '../../utils/cardMediaSanitizer';
 
 interface GeneratorProps {
   onGenerated: (data: RunData) => void;
@@ -210,7 +211,8 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       setCurrentRunId(runId);
       const res = await fetch(`/runs/${runId}/run-data.json`);
       if (!res.ok) throw new Error('Failed to load run data');
-      const runData = await res.json() as RunData;
+      let runData = await res.json() as RunData;
+      runData = sanitizeRunDataCardMedia(runData);
 
       if (isRunDataV2(runData)) {
         runData.generationSettings = runData.generationSettings || { mode: 'fast_start', prefetchDepth: 2 };
@@ -285,14 +287,15 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
         { mode: generationMode, prefetchDepth: 2 },
         skipFileData ? { skipFileData: true } : undefined,
       );
+      const sanitizedRunData = sanitizeRunDataCardMedia(runData);
 
       setLoadingMessage('Preloading Room 1 Graphics...');
-      await preloadEssentialImages(runData);
+      await preloadEssentialImages(sanitizedRunData);
 
       setLoadingMessage('Synthesizing Audio Magic...');
-      await preloadEssentialAudio(runData);
+      await preloadEssentialAudio(sanitizedRunData);
 
-      onGenerated(runData);
+      onGenerated(sanitizedRunData);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Failed to generate game data. Please try again.');
