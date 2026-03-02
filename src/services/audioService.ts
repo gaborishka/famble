@@ -722,6 +722,13 @@ async function tryLoadFromRunFile(cacheKey: string, fileNames: string | string[]
 
     const candidates = Array.isArray(fileNames) ? fileNames : [fileNames];
 
+    // Demo mode: resolve from static files directly, skip API check
+    if (process.env.VITE_DEMO_MODE) {
+        const staticUrl = `/runs/${currentRunId}/${candidates[0]}`;
+        audioCache.set(cacheKey, staticUrl);
+        return staticUrl;
+    }
+
     for (const fileName of candidates) {
         try {
             const res = await fetch(`/api/check-file?runId=${currentRunId}&fileName=${fileName}`);
@@ -742,7 +749,7 @@ async function tryLoadFromRunFile(cacheKey: string, fileNames: string | string[]
 
 async function persistRunFile(fileName: string, blob: Blob): Promise<string | undefined> {
     const currentRunId = getCurrentRunId();
-    if (!currentRunId) return undefined;
+    if (!currentRunId || process.env.VITE_DEMO_MODE) return undefined;
 
     try {
         const base64Data = await new Promise<string>((resolve, reject) => {

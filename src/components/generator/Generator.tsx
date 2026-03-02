@@ -278,22 +278,24 @@ export const Generator: React.FC<GeneratorProps> = ({ onGenerated, forceLoadingP
       let effectivePrompt = finalPrompt;
       let skipFileData = false;
 
-      // Mistral Document AI preprocessing
+      // Mistral Document AI preprocessing (optional — falls through on failure)
       if (mistralInput) {
         setLoadingMessage('Analyzing Document...');
-        const extraction = await processDocumentOCR(mistralInput);
-        if (extraction && extraction.markdown.trim().length > 0) {
-          console.log(
-            `Mistral OCR: extracted ${extraction.pageCount} pages, ` +
-            `${extraction.markdown.length} chars, ` +
-            `annotations: ${extraction.annotations ? 'yes' : 'no'}`
-          );
-          effectivePrompt = buildEnhancedPrompt(finalPrompt, extraction);
-          skipFileData = true;
-        } else {
-          throw new Error(
-            'Document analysis failed or returned empty content. Please try another file/URL or check MISTRAL_API_KEY.'
-          );
+        try {
+          const extraction = await processDocumentOCR(mistralInput);
+          if (extraction && extraction.markdown.trim().length > 0) {
+            console.log(
+              `Mistral OCR: extracted ${extraction.pageCount} pages, ` +
+              `${extraction.markdown.length} chars, ` +
+              `annotations: ${extraction.annotations ? 'yes' : 'no'}`
+            );
+            effectivePrompt = buildEnhancedPrompt(finalPrompt, extraction);
+            skipFileData = true;
+          } else {
+            console.warn('OCR returned empty content, skipping — will pass raw input to generation.');
+          }
+        } catch (ocrErr) {
+          console.warn('OCR failed, skipping:', ocrErr);
         }
       }
 

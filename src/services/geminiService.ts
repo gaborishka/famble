@@ -25,7 +25,9 @@ import { inferEnemyIsFlying } from '../../shared/utils/enemy';
 import { removeBackground } from '@imgly/background-removal';
 import { generateFallbackNodeMap } from '../engine/mapGenerator';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = process.env.GEMINI_API_KEY
+  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+  : (null as unknown as GoogleGenAI);
 const TEXT_MODELS = ['mistral-large-latest', 'mistral-small-latest'] as const;
 const RUN_DATA_MAX_ATTEMPTS = 3;
 
@@ -189,7 +191,7 @@ export function resolveManifestObjectUrl(runData: RunData | RunDataV2 | null | u
 }
 
 export async function saveRunSnapshot(runData: RunData): Promise<void> {
-  if (!currentRunId) return;
+  if (!currentRunId || process.env.VITE_DEMO_MODE) return;
   try {
     await fetch('/api/save-run', {
       method: 'POST',
@@ -861,6 +863,14 @@ export async function generateGameImage(
 
   if (currentRunId) {
     const fileName = buildImageFileName(type, effectivePrompt, fileKey);
+
+    // Demo mode: resolve from static files only, never call APIs
+    if (process.env.VITE_DEMO_MODE) {
+      const staticUrl = `/runs/${currentRunId}/${fileName}`;
+      imageCache.set(cacheKey, staticUrl);
+      return staticUrl;
+    }
+
     try {
       const res = await fetch(`/api/check-file?runId=${currentRunId}&fileName=${fileName}`);
       if (res.ok) {

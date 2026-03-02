@@ -259,6 +259,7 @@ export default defineConfig(({ mode }) => {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || env.GOOGLE_API_KEY),
       'process.env.ELEVENLABS_API_KEY': JSON.stringify(env.ELEVENLABS_API_KEY),
       'process.env.MISTRAL_API_KEY': JSON.stringify(env.MISTRAL_API_KEY),
+      'process.env.VITE_DEMO_MODE': JSON.stringify(env.VITE_DEMO_MODE || ''),
     },
     resolve: {
       alias: {

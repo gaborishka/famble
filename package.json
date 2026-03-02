@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "build:demo": "node scripts/prepare-demo.mjs && VITE_DEMO_MODE=true GEMINI_API_KEY='' GOOGLE_API_KEY='' MISTRAL_API_KEY='' ELEVENLABS_API_KEY='' vite build && node scripts/clean-demo-dist.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
