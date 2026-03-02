@@ -4,6 +4,9 @@
 
 Drop in a URL, PDF, or text — Famble reads it, then builds a complete Slay the Spire-style card game around it: unique characters, enemies, cards, bosses, backgrounds, music, and sound effects. Every run is one-of-a-kind.
 
+## Demo
+https://famble-six.vercel.app/
+
 ## Screenshots
 
 <p align="center">
