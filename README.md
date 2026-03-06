@@ -52,3 +52,9 @@ https://famble-six.vercel.app/
    ```
    npm run dev
    ```
+
+## Blog
+
+Read the full story behind Famble:
+
+[How I Built a Game That Writes Itself — My Mistral Hackathon Story](https://substack.com/home/post/p-189784424)
