@@ -1,3 +1,12 @@
+// ── Sprite Sheet Types ──────────────────────────────────────────────
+export type SpritePose = 'idle' | 'attack' | 'hurt' | 'block' | 'death';
+
+export interface SpriteSheet {
+  sheetUrl?: string;
+  poses: Partial<Record<SpritePose, string>>;
+}
+
+// ── Card ────────────────────────────────────────────────────────────
 export interface Card {
   id: string;
   name: string;
@@ -46,6 +55,7 @@ export interface Enemy {
   audioObjectId?: string;
   imageUrl?: string;
   audioUrl?: string;
+  spriteSheet?: SpriteSheet;
   statusEffects?: Record<string, number>;
 }
 

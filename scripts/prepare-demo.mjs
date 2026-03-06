@@ -18,6 +18,11 @@ const DEFAULT_RUN_IDS = [
   '1772374975212', // Hackathon Showdown
   '1772375745134', // Hackathon Showdown: Code, Compete, Conquer
   '1772440550115', // Mushroom Kingdom Adventure
+  '1772557787688', // Napoleonic Wars: French Empire
+  '1772559485720', // Middle-earth Warfare
+  '1772559614227', // Sprint Planning: Debugging the Backlog
+  '1772560121928', // Hogwarts Legacy
+  '1772560623549', // Zootopia: Urban Jungle
 ];
 
 const DATA_URI_RE = /^data:(image|audio)\//;

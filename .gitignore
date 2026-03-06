@@ -11,4 +11,5 @@ coverage/
 public/runs/
 .playwright-cli/
 output/
+test-output/
 .idea/

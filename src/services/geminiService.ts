@@ -20,6 +20,8 @@ import {
   EventRoomContent,
   ShopRoomContent,
   CombatRoomContent,
+  SpriteSheet,
+  SpritePose,
 } from '../../shared/types/game';
 import { inferEnemyIsFlying } from '../../shared/utils/enemy';
 import { removeBackground } from '@imgly/background-removal';
@@ -102,12 +104,44 @@ export function buildPlayerSpritePrompt(theme: string): string {
 
 export function buildEnemySpritePrompt(enemyPrompt: string): string {
   const normalizedEnemyPrompt = normalizeSpriteSubjectPrompt(enemyPrompt);
-  return `A character sprite of ${normalizedEnemyPrompt || 'a hostile combatant'}, STRICT ORIENTATION: face left only, looking left only, left-facing side profile only. Ignore any conflicting orientation words in the source description. Feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
+  return `A character sprite of ${normalizedEnemyPrompt || 'a hostile combatant'}, facing right, looking right, side profile, feet touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), enemy character, 2D vector art`;
 }
 
 export function buildBossSpritePrompt(bossPrompt: string): string {
   const normalizedBossPrompt = normalizeSpriteSubjectPrompt(bossPrompt);
-  return `A character sprite of ${normalizedBossPrompt || 'a massive boss enemy'}, STRICT ORIENTATION: face left only, looking left only, left-facing side profile only. Ignore any conflicting orientation words in the source description. Feet or base touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as a normal character, huge imposing scale, 2D vector art`;
+  return `A character sprite of ${normalizedBossPrompt || 'a massive boss enemy'}, facing right, looking right, side profile, feet or base touching the very bottom edge of the frame, full body from head to toe, standing on a solid green background (#00FF00), massive giant boss enemy character, at least twice as large as a normal character, huge imposing scale, 2D vector art`;
+}
+
+const SPRITE_SHEET_SUFFIX = `\nIMPORTANT: Generate exactly 5 poses of the SAME character arranged in a SINGLE HORIZONTAL ROW from left to right. Do NOT use multiple rows — all 5 poses must be in ONE row side by side. The image should be very wide (landscape orientation).
+
+Think of the image as divided into 5 EQUAL columns. Each character pose must be CENTERED within its column and must NOT extend beyond its column boundaries. This ensures equal spacing between all poses.
+
+Column 1: Idle standing pose (centered)
+Column 2: Attack / action pose (centered)
+Column 3: Hurt / taking damage pose (centered)
+Column 4: Defensive / blocking pose (centered)
+Column 5: Defeated / collapsed on the ground (centered)
+
+CRITICAL SIZE AND SPACING RULES:
+- Each character (with ALL weapons, capes, shields, limbs) must fit within 50% of one column width — leaving 25% empty green space on each side
+- NO part of any pose may overlap or touch an adjacent pose — there must be CLEAR green gap between every pair of poses
+- The ENTIRE character with all accessories must be FULLY visible — NOTHING cropped at any edge
+- Leave at least 15% green margin at top and bottom
+- NO divider lines, NO borders, NO frames — only solid green (#00FF00) gaps between poses
+- NO text labels, NO sound effects text, NO decorative elements
+- Keep consistent character design, proportions, and scale across all 5 poses
+- The green (#00FF00) background must be uniform and solid everywhere`;
+
+export function buildPlayerSpriteSheetPrompt(theme: string): string {
+  return `${buildPlayerSpritePrompt(theme)} ${SPRITE_SHEET_SUFFIX}`;
+}
+
+export function buildEnemySpriteSheetPrompt(enemyPrompt: string): string {
+  return `${buildEnemySpritePrompt(enemyPrompt)} ${SPRITE_SHEET_SUFFIX}`;
+}
+
+export function buildBossSpriteSheetPrompt(bossPrompt: string): string {
+  return `${buildBossSpritePrompt(bossPrompt)} ${SPRITE_SHEET_SUFFIX}`;
 }
 
 function normalizeBattleBackgroundPrompt(prompt: string | undefined, theme: string): string {
@@ -660,7 +694,7 @@ Return the data strictly matching the provided JSON schema.`,
                 currentHp: { type: Type.INTEGER },
                 description: { type: Type.STRING },
                 isFlying: { type: Type.BOOLEAN, description: 'True only if this enemy fights in the air (flying/hovering/levitating). False for ground enemies.' },
-                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. IMPORTANT: orientation must always be left-facing side profile only. Include "facing left, looking left, side profile" and never include facing right.' },
+                imagePrompt: { type: Type.STRING, description: 'A visual description of the enemy for image generation. Do NOT include orientation/facing instructions — those are added automatically.' },
                 audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for enemy attack SFX only. Example: "rusted halberd whoosh with chain rattle". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
                 intents: {
                   type: Type.ARRAY,
@@ -687,7 +721,7 @@ Return the data strictly matching the provided JSON schema.`,
               maxHp: { type: Type.INTEGER },
               currentHp: { type: Type.INTEGER },
               description: { type: Type.STRING },
-              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. IMPORTANT: orientation must always be left-facing side profile only. Include "facing left, looking left, side profile" and never include facing right.' },
+              imagePrompt: { type: Type.STRING, description: 'A visual description of a giant boss for image generation, emphasize it is massive and at least twice as large as the player. Do NOT include orientation/facing instructions — those are added automatically.' },
               audioPrompt: { type: Type.STRING, description: 'Unique semantic fragment for boss attack SFX only. Example: "colossal gavel impact cracking marble". Favoring warm weighty sounds over shrill or harsh ones. Do not include technical audio instructions.' },
               narratorText: { type: Type.STRING, description: 'A dramatic boss opening dialogue line for TTS, 6-20 words.' },
               narratorVoiceStyle: { type: Type.STRING, description: 'Short voice style hint for TTS selection, 2-8 words. Example: "cold judicial authority". Prefer natural human delivery unless explicitly synthetic.' },
@@ -768,7 +802,7 @@ function syncImageCacheScope(): void {
 
 function buildImageCacheKey(
   prompt: string | undefined,
-  type: 'asset' | 'background' | 'character',
+  type: 'asset' | 'background' | 'character' | 'sprite-sheet',
   fileKey?: string
 ): string | null {
   if (!prompt && !fileKey) return null;
@@ -796,7 +830,7 @@ export function getCachedImageUrl(
   return imageCache.get(cacheKey) ?? null;
 }
 
-function buildImageFileName(type: 'asset' | 'background' | 'character', prompt: string, fileKey?: string): string {
+function buildImageFileName(type: 'asset' | 'background' | 'character' | 'sprite-sheet', prompt: string, fileKey?: string): string {
   if (fileKey) {
     const effectiveFileKey = type === 'asset' ? `${ASSET_IMAGE_PROMPT_VERSION}_${fileKey}` : fileKey;
     return `${type}_${toFileSafeKey(effectiveFileKey)}.png`;
@@ -844,7 +878,7 @@ function summarizeNoImageResponse(response: any): string {
 
 export async function generateGameImage(
   prompt: string,
-  type: 'asset' | 'background' | 'character' = 'asset',
+  type: 'asset' | 'background' | 'character' | 'sprite-sheet' = 'asset',
   fileKey?: string
 ): Promise<string> {
   syncImageCacheScope();
@@ -888,12 +922,14 @@ export async function generateGameImage(
   let prefix = "A 2D fantasy card illustration for an inner art panel, clean lines, flat colors, highly detailed, full-bleed composition. No frame, no border, no text, no UI elements. ";
   if (type === 'background') {
     prefix = `A 2D video game combat stage background, side-scrolling perspective, clean lines, flat colors, highly detailed. ${BATTLE_STAGE_FLOOR_PROMPT_RULE} `;
+  } else if (type === 'sprite-sheet') {
+    prefix = "A 2D video game character sprite sheet, clean lines, flat colors, solid green screen background (#00FF00), highly detailed. ";
   } else if (type === 'character') {
     prefix = "A 2D video game character sprite, clean lines, flat colors, solid green screen background (#00FF00), highly detailed, isolated. The character's feet or base must touch the very bottom edge of the image. Full body visible from head to toe. ";
   }
 
   const request = ai.models.generateContent({
-    model: 'gemini-2.5-flash-image',
+    model: 'gemini-3.1-flash-image-preview',
     contents: {
       parts: [
         {
@@ -904,7 +940,7 @@ export async function generateGameImage(
     config: {
       responseModalities: ['IMAGE'],
       imageConfig: {
-        aspectRatio: type === 'background' ? '16:9' : undefined,
+        aspectRatio: type === 'background' ? '16:9' : type === 'sprite-sheet' ? '16:9' : undefined,
       },
     },
   }).then(async response => {
@@ -915,7 +951,7 @@ export async function generateGameImage(
 
     let url = `data:${imagePart.mimeType || 'image/png'};base64,${imagePart.data}`;
 
-    // Remove background for characters
+    // Remove background for characters (sprite-sheets use chroma-key in the slicer instead)
     if (type === 'character') {
       try {
         // imgly requires a blob or url, we convert the base64 data to blob
@@ -966,6 +1002,66 @@ export async function generateGameImage(
   return request;
 }
 
+/**
+ * Generate a sprite sheet with 5 poses, slice it, and return a SpriteSheet object.
+ * Falls back to null on failure (caller should use single-image fallback).
+ */
+export async function generateSpriteSheet(
+  characterType: 'player' | 'enemy' | 'boss',
+  sourcePrompt: string | undefined,
+  theme: string,
+  fileKey?: string,
+): Promise<SpriteSheet | null> {
+  if (!sourcePrompt && characterType !== 'player') return null;
+
+  try {
+    // Build sprite sheet prompt
+    let sheetPrompt: string;
+    if (characterType === 'player') {
+      sheetPrompt = buildPlayerSpriteSheetPrompt(theme);
+    } else if (characterType === 'boss') {
+      sheetPrompt = buildBossSpriteSheetPrompt(sourcePrompt || 'boss');
+    } else {
+      sheetPrompt = buildEnemySpriteSheetPrompt(sourcePrompt || 'enemy');
+    }
+
+    const sheetFileKey = fileKey ? `${fileKey}_sheet` : undefined;
+
+    // Generate the full sprite sheet (goes through generateGameImage for caching + bg removal)
+    const sheetDataUrl = await generateGameImage(sheetPrompt, 'sprite-sheet', sheetFileKey);
+    if (!sheetDataUrl) throw new Error('Empty sprite sheet URL');
+
+    // Dynamic import to keep the slicer out of the initial bundle
+    const { sliceSpriteSheet } = await import('../utils/spriteSheetSlicer');
+    const spriteSheet = await sliceSpriteSheet(sheetDataUrl);
+    if (!spriteSheet) {
+      console.warn(`Sprite sheet slicing failed for ${characterType}, falling back`);
+      return null;
+    }
+
+    // Save individual poses to filesystem for persistence
+    if (currentRunId && spriteSheet.poses) {
+      const poseNames = Object.keys(spriteSheet.poses) as SpritePose[];
+      for (const pose of poseNames) {
+        const poseUrl = spriteSheet.poses[pose];
+        if (!poseUrl) continue;
+        const fileName = buildImageFileName('character', sheetPrompt, fileKey ? `${fileKey}_${pose}` : undefined);
+        fetch('/api/save-file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runId: currentRunId, fileName, base64Data: poseUrl }),
+        }).catch(err => console.error(`Failed to save pose ${pose}:`, err));
+      }
+    }
+
+    console.log(`generateSpriteSheet: ${characterType} sprite sheet ready (${Object.keys(spriteSheet.poses).length} poses)`);
+    return spriteSheet;
+  } catch (err) {
+    console.error(`generateSpriteSheet failed for ${characterType}:`, err);
+    return null;
+  }
+}
+
 export async function preloadFirstCombatImages(runData: RunData): Promise<void> {
   const promises: Promise<string>[] = [];
   const playerPortraitPrompt = buildPlayerPortraitPrompt(runData.theme);
@@ -973,16 +1069,43 @@ export async function preloadFirstCombatImages(runData: RunData): Promise<void> 
   // Background
   promises.push(generateGameImage(buildDefaultBattleBackgroundPrompt(runData.theme), 'background').catch(e => { console.error('Failed to preload background', e); return ''; }));
 
-  // Player portrait and sprite
+  // Player portrait
   promises.push(generateGameImage(playerPortraitPrompt, 'character').catch(e => { console.error('Failed to preload player portrait', e); return ''; }));
-  promises.push(generateGameImage(buildPlayerSpritePrompt(runData.theme), 'character').catch(e => { console.error('Failed to preload player sprite', e); return ''; }));
 
-  // First enemy sprite
+  // Player sprite sheet (falls back to single sprite on failure)
+  promises.push(
+    generateSpriteSheet('player', undefined, runData.theme, 'player_sprite')
+      .then(sheet => {
+        if (sheet) {
+          // Store sheet on runData for CombatArena to pick up
+          (runData as any)._playerSpriteSheet = sheet;
+          return sheet.poses.idle || '';
+        }
+        // Fallback to single image
+        return generateGameImage(buildPlayerSpritePrompt(runData.theme), 'character');
+      })
+      .catch(e => { console.error('Failed to preload player sprite', e); return ''; })
+  );
+
+  // First enemy sprite sheet
   if (runData.enemies.length > 0 && runData.enemies[0].imagePrompt) {
-    promises.push(generateGameImage(buildEnemySpritePrompt(runData.enemies[0].imagePrompt), 'character').then(url => {
-      runData.enemies[0].imageUrl = url;
-      return url;
-    }).catch(e => { console.error('Failed to preload enemy sprite', e); return ''; }));
+    const enemy = runData.enemies[0];
+    promises.push(
+      generateSpriteSheet('enemy', enemy.imagePrompt, runData.theme, `enemy_${toFileSafeKey(enemy.name || 'e0')}`)
+        .then(sheet => {
+          if (sheet) {
+            enemy.spriteSheet = sheet;
+            enemy.imageUrl = sheet.poses.idle || enemy.imageUrl;
+            return sheet.poses.idle || '';
+          }
+          // Fallback to single image
+          return generateGameImage(buildEnemySpritePrompt(enemy.imagePrompt!), 'character').then(url => {
+            enemy.imageUrl = url;
+            return url;
+          });
+        })
+        .catch(e => { console.error('Failed to preload enemy sprite', e); return ''; })
+    );
   }
 
   // All starting cards
@@ -1002,19 +1125,42 @@ export async function preloadBackgroundImages(runData: RunData): Promise<void> {
   for (let i = 1; i < runData.enemies.length; i++) {
     const enemy = runData.enemies[i];
     if (enemy.imagePrompt) {
-      promises.push(generateGameImage(buildEnemySpritePrompt(enemy.imagePrompt), 'character').then(url => {
-        enemy.imageUrl = url;
-        return url;
-      }).catch(e => { console.error('Failed to background load enemy sprite', e); return ''; }));
+      promises.push(
+        generateSpriteSheet('enemy', enemy.imagePrompt, runData.theme, `enemy_${toFileSafeKey(enemy.name || `e${i}`)}`)
+          .then(sheet => {
+            if (sheet) {
+              enemy.spriteSheet = sheet;
+              enemy.imageUrl = sheet.poses.idle || enemy.imageUrl;
+              return sheet.poses.idle || '';
+            }
+            return generateGameImage(buildEnemySpritePrompt(enemy.imagePrompt!), 'character').then(url => {
+              enemy.imageUrl = url;
+              return url;
+            });
+          })
+          .catch(e => { console.error('Failed to background load enemy sprite', e); return ''; })
+      );
     }
   }
 
   // Boss
   if (runData.boss && runData.boss.imagePrompt) {
-    promises.push(generateGameImage(buildBossSpritePrompt(runData.boss.imagePrompt), 'character').then(url => {
-      runData.boss.imageUrl = url;
-      return url;
-    }).catch(e => { console.error('Failed to background load boss sprite', e); return ''; }));
+    const boss = runData.boss;
+    promises.push(
+      generateSpriteSheet('boss', boss.imagePrompt, runData.theme, `boss_${toFileSafeKey(boss.name || 'boss')}`)
+        .then(sheet => {
+          if (sheet) {
+            boss.spriteSheet = sheet;
+            boss.imageUrl = sheet.poses.idle || boss.imageUrl;
+            return sheet.poses.idle || '';
+          }
+          return generateGameImage(buildBossSpritePrompt(boss.imagePrompt!), 'character').then(url => {
+            boss.imageUrl = url;
+            return url;
+          });
+        })
+        .catch(e => { console.error('Failed to background load boss sprite', e); return ''; })
+    );
   }
 
   // We don't await this intentionally so it runs in the background
@@ -3413,54 +3559,90 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
         }
       }
     ));
-    imagePromises.push(preloadImageWithManifest(
-      buildPlayerSpritePrompt(theme),
-      'character',
-      refs?.playerSpriteImageId,
-      (url) => {
-        if (roomPayload) {
-          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), playerSpriteImageUrl: url };
-        }
-      }
-    ));
+    // Player sprite sheet
+    imagePromises.push(
+      generateSpriteSheet('player', undefined, theme, 'player_sprite')
+        .then(sheet => {
+          if (sheet) {
+            (runData as any)._playerSpriteSheet = sheet;
+            if (roomPayload) {
+              roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), playerSpriteImageUrl: sheet.poses.idle || '' };
+            }
+          } else {
+            return preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character', refs?.playerSpriteImageId, (url) => {
+              if (roomPayload) {
+                roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), playerSpriteImageUrl: url };
+              }
+            });
+          }
+        })
+    );
 
     if (roomPayload && (roomPayload.nodeType === 'Combat' || roomPayload.nodeType === 'Elite')) {
       roomPayload.enemies.forEach((enemy, index) => {
-        imagePromises.push(preloadImageWithManifest(
-          enemy.imagePrompt ? buildEnemySpritePrompt(enemy.imagePrompt) : undefined,
-          'character',
-          enemy.imageObjectId || refs?.enemySpriteImageIds?.[index] || refs?.enemySpriteImageId,
-          (url) => {
-            enemy.imageUrl = url;
-            const enemySpriteImageUrls = [...(roomPayload.objectUrls?.enemySpriteImageUrls || [])];
-            enemySpriteImageUrls[index] = url;
-            roomPayload.objectUrls = {
-              ...(roomPayload.objectUrls || {}),
-              enemySpriteImageUrl: index === 0 ? url : roomPayload.objectUrls?.enemySpriteImageUrl,
-              enemySpriteImageUrls,
-            };
-          }
-        ));
+        if (enemy.imagePrompt) {
+          const fileKey = `enemy_${toFileSafeKey(enemy.name || `e${index}`)}`;
+          imagePromises.push(
+            generateSpriteSheet('enemy', enemy.imagePrompt, theme, fileKey)
+              .then(sheet => {
+                if (sheet) {
+                  enemy.spriteSheet = sheet;
+                  enemy.imageUrl = sheet.poses.idle || enemy.imageUrl;
+                } else {
+                  return preloadImageWithManifest(
+                    buildEnemySpritePrompt(enemy.imagePrompt!), 'character',
+                    enemy.imageObjectId || refs?.enemySpriteImageIds?.[index] || refs?.enemySpriteImageId,
+                    (url) => { enemy.imageUrl = url; },
+                  );
+                }
+                const enemySpriteImageUrls = [...(roomPayload.objectUrls?.enemySpriteImageUrls || [])];
+                enemySpriteImageUrls[index] = enemy.imageUrl || '';
+                roomPayload.objectUrls = {
+                  ...(roomPayload.objectUrls || {}),
+                  enemySpriteImageUrl: index === 0 ? (enemy.imageUrl || '') : roomPayload.objectUrls?.enemySpriteImageUrl,
+                  enemySpriteImageUrls,
+                };
+              })
+          );
+        }
       });
     } else if (roomPayload && roomPayload.nodeType === 'Boss') {
-      imagePromises.push(preloadImageWithManifest(
-        roomPayload.boss.imagePrompt ? buildBossSpritePrompt(roomPayload.boss.imagePrompt) : undefined,
-        'character',
-        roomPayload.boss.imageObjectId || refs?.bossSpriteImageId,
-        (url) => {
-          roomPayload.boss.imageUrl = url;
-          roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), bossSpriteImageUrl: url };
-        }
-      ));
+      if (roomPayload.boss.imagePrompt) {
+        const bossFileKey = `boss_${toFileSafeKey(roomPayload.boss.name || 'boss')}`;
+        imagePromises.push(
+          generateSpriteSheet('boss', roomPayload.boss.imagePrompt, theme, bossFileKey)
+            .then(sheet => {
+              if (sheet) {
+                roomPayload.boss.spriteSheet = sheet;
+                roomPayload.boss.imageUrl = sheet.poses.idle || roomPayload.boss.imageUrl;
+              } else {
+                return preloadImageWithManifest(
+                  buildBossSpritePrompt(roomPayload.boss.imagePrompt!), 'character',
+                  roomPayload.boss.imageObjectId || refs?.bossSpriteImageId,
+                  (url) => { roomPayload.boss.imageUrl = url; },
+                );
+              }
+              roomPayload.objectUrls = { ...(roomPayload.objectUrls || {}), bossSpriteImageUrl: roomPayload.boss.imageUrl || '' };
+            })
+        );
+      }
     } else if (firstEnemy?.imagePrompt) {
-      imagePromises.push(preloadImageWithManifest(
-        buildEnemySpritePrompt(firstEnemy.imagePrompt),
-        'character',
-        firstEnemy.imageObjectId || refs?.enemySpriteImageIds?.[0] || refs?.enemySpriteImageId,
-        (url) => {
-          firstEnemy.imageUrl = url;
-        }
-      ));
+      const fileKey = `enemy_${toFileSafeKey(firstEnemy.name || 'e0')}`;
+      imagePromises.push(
+        generateSpriteSheet('enemy', firstEnemy.imagePrompt, theme, fileKey)
+          .then(sheet => {
+            if (sheet) {
+              firstEnemy.spriteSheet = sheet;
+              firstEnemy.imageUrl = sheet.poses.idle || firstEnemy.imageUrl;
+            } else {
+              return preloadImageWithManifest(
+                buildEnemySpritePrompt(firstEnemy.imagePrompt!), 'character',
+                firstEnemy.imageObjectId || refs?.enemySpriteImageIds?.[0] || refs?.enemySpriteImageId,
+                (url) => { firstEnemy.imageUrl = url; },
+              );
+            }
+          })
+      );
     }
 
     starterCards.forEach((card, index) => {
@@ -3499,11 +3681,31 @@ export async function preloadEssentialImages(runData: RunData | RunDataV2): Prom
     const cards = runData.cards.slice(0, 3);
     imagePromises.push(preloadImageWithManifest(buildDefaultBattleBackgroundPrompt(theme), 'background'));
     imagePromises.push(preloadImageWithManifest(playerPortraitPrompt, 'character'));
-    imagePromises.push(preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character'));
+    imagePromises.push(
+      generateSpriteSheet('player', undefined, theme, 'player_sprite')
+        .then(sheet => {
+          if (sheet) {
+            (runData as any)._playerSpriteSheet = sheet;
+          } else {
+            return preloadImageWithManifest(buildPlayerSpritePrompt(theme), 'character');
+          }
+        })
+    );
     if (firstEnemy?.imagePrompt) {
-      imagePromises.push(preloadImageWithManifest(buildEnemySpritePrompt(firstEnemy.imagePrompt), 'character', undefined, (url) => {
-        firstEnemy.imageUrl = url;
-      }));
+      const fileKey = `enemy_${toFileSafeKey(firstEnemy.name || 'e0')}`;
+      imagePromises.push(
+        generateSpriteSheet('enemy', firstEnemy.imagePrompt, theme, fileKey)
+          .then(sheet => {
+            if (sheet) {
+              firstEnemy.spriteSheet = sheet;
+              firstEnemy.imageUrl = sheet.poses.idle || firstEnemy.imageUrl;
+            } else {
+              return preloadImageWithManifest(buildEnemySpritePrompt(firstEnemy.imagePrompt!), 'character', undefined, (url) => {
+                firstEnemy.imageUrl = url;
+              });
+            }
+          })
+      );
     }
     cards.forEach(card => {
       imagePromises.push(preloadImageWithManifest(card.imagePrompt, 'asset', undefined, (url) => {
@@ -3544,17 +3746,28 @@ export async function preloadRoomImages(runData: RunDataV2, roomId: string, payl
       payload.objectUrls = { ...(payload.objectUrls || {}), backgroundImageUrl: url };
     }));
     payload.enemies.forEach((enemy, idx) => {
-      promises.push(preloadImage(
-        enemy.imagePrompt ? buildEnemySpritePrompt(enemy.imagePrompt) : undefined,
-        'character',
-        enemy.imageObjectId || payload.objectRefs?.enemySpriteImageIds?.[idx],
-        (url) => {
-          enemy.imageUrl = url;
-          const enemySpriteImageUrls = [...(payload.objectUrls?.enemySpriteImageUrls || [])];
-          enemySpriteImageUrls[idx] = url;
-          payload.objectUrls = { ...(payload.objectUrls || {}), enemySpriteImageUrls };
-        }
-      ));
+      if (enemy.imagePrompt) {
+        const fileKey = `enemy_${toFileSafeKey(enemy.name || `e${idx}`)}`;
+        promises.push(
+          generateSpriteSheet('enemy', enemy.imagePrompt, runData.theme, fileKey)
+            .then(sheet => {
+              if (sheet) {
+                enemy.spriteSheet = sheet;
+                enemy.imageUrl = sheet.poses.idle || enemy.imageUrl;
+              } else {
+                // Fallback to single image
+                return preloadImage(
+                  buildEnemySpritePrompt(enemy.imagePrompt!), 'character',
+                  enemy.imageObjectId || payload.objectRefs?.enemySpriteImageIds?.[idx],
+                  (url) => { enemy.imageUrl = url; },
+                );
+              }
+              const enemySpriteImageUrls = [...(payload.objectUrls?.enemySpriteImageUrls || [])];
+              enemySpriteImageUrls[idx] = enemy.imageUrl || '';
+              payload.objectUrls = { ...(payload.objectUrls || {}), enemySpriteImageUrls };
+            })
+        );
+      }
     });
     (payload.rewardCards || []).forEach((card, idx) => {
       promises.push(preloadImage(card.imagePrompt, 'asset', card.imageObjectId || payload.objectRefs?.cardImageIds?.[idx], (url) => {
@@ -3569,15 +3782,25 @@ export async function preloadRoomImages(runData: RunDataV2, roomId: string, payl
       payload.backgroundImageUrl = url;
       payload.objectUrls = { ...(payload.objectUrls || {}), backgroundImageUrl: url };
     }));
-    promises.push(preloadImage(
-      payload.boss?.imagePrompt ? buildBossSpritePrompt(payload.boss.imagePrompt) : undefined,
-      'character',
-      payload.boss.imageObjectId || payload.objectRefs?.bossSpriteImageId,
-      (url) => {
-        payload.boss.imageUrl = url;
-        payload.objectUrls = { ...(payload.objectUrls || {}), bossSpriteImageUrl: url };
-      }
-    ));
+    if (payload.boss?.imagePrompt) {
+      const bossFileKey = `boss_${toFileSafeKey(payload.boss.name || 'boss')}`;
+      promises.push(
+        generateSpriteSheet('boss', payload.boss.imagePrompt, runData.theme, bossFileKey)
+          .then(sheet => {
+            if (sheet) {
+              payload.boss.spriteSheet = sheet;
+              payload.boss.imageUrl = sheet.poses.idle || payload.boss.imageUrl;
+            } else {
+              return preloadImage(
+                buildBossSpritePrompt(payload.boss.imagePrompt!), 'character',
+                payload.boss.imageObjectId || payload.objectRefs?.bossSpriteImageId,
+                (url) => { payload.boss.imageUrl = url; },
+              );
+            }
+            payload.objectUrls = { ...(payload.objectUrls || {}), bossSpriteImageUrl: payload.boss.imageUrl || '' };
+          })
+      );
+    }
   } else if (payload.nodeType === 'Event') {
     promises.push(preloadImage(payload.imagePrompt, 'background', payload.objectRefs?.eventImageId, (url) => {
       payload.imageUrl = url;

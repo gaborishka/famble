@@ -11,6 +11,7 @@ import { generateSoundEffect, generateMusic, generateBossTTS, playSfx } from '..
 import { Volume2, VolumeX } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GameImage } from '../GameImage';
+import { SpriteImage } from '../SpriteImage';
 import {
   buildBossSpritePrompt,
   buildDefaultBattleBackgroundPrompt,
@@ -19,6 +20,7 @@ import {
   buildPlayerSpritePrompt,
   resolveManifestObjectUrl,
 } from '../../services/geminiService';
+import type { SpriteSheet } from '../../../shared/types/game';
 import { inferEnemyIsFlying } from '../../../shared/utils/enemy';
 
 const ATTACK_INTENT_TYPES = new Set(['Attack', 'AttackDefend', 'AttackDebuff', 'AttackBuff']);
@@ -831,6 +833,7 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
   const playerSpriteSrc = roomUrls?.playerSpriteImageUrl
     || sharedPlayerRefs.playerSpriteImageUrl
     || resolveManifestObjectUrl(runData, playerSpriteObjectId);
+  const playerSpriteSheet: SpriteSheet | undefined = (runData as any)._playerSpriteSheet;
   const enemyIndexes = gameState.enemies.map((_, idx) => idx);
   const flyingEnemyIndexes = isBossEncounter
     ? []
@@ -1006,13 +1009,14 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
             animate={playerAnim}
             className="w-full h-[clamp(16rem,40vh,24rem)] flex items-center justify-center relative z-10"
           >
-            <GameImage
-              src={playerSpriteSrc}
-              prompt={playerSpritePrompt}
+            <SpriteImage
+              spriteSheet={playerSpriteSheet}
+              fallbackSrc={playerSpriteSrc}
+              fallbackPrompt={playerSpritePrompt}
+              currentPose={playerAnim}
               fileKey={playerSpriteObjectId}
               className="w-full h-full object-contain scale-[1.15] sm:scale-[1.3] lg:scale-[1.5] origin-bottom drop-shadow-[0_10px_30px_rgba(0,0,0,0.5)] pointer-events-none"
               alt="Player"
-              type="character"
             />
             <AnimatePresence>
               {impactFlash === 'player' && (
@@ -1140,14 +1144,17 @@ export const CombatArena: React.FC<CombatArenaProps> = ({ runData, deck, enemies
                   className={`flex items-center justify-center relative z-10 ${isBoss ? 'w-[clamp(18rem,26vw,26rem)] h-[clamp(22rem,46vh,34rem)]' : 'w-[clamp(14rem,20vw,20rem)] h-[clamp(18rem,40vh,26rem)]'}`}
                 >
                   {(enemyState.imagePrompt || enemyImageSrc) ? (
-                    <GameImage
-                      src={enemyImageSrc}
-                      prompt={enemyImagePrompt}
-                      fileKey={enemyImageObjectId}
-                      className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.12] sm:scale-[1.28] lg:scale-[1.5]' : 'scale-[1.2] sm:scale-[1.34] lg:scale-[1.55]'}`}
-                      alt={enemyState.name}
-                      type="character"
-                    />
+                    <div className="w-full h-full" style={{ transform: 'scaleX(-1)' }}>
+                      <SpriteImage
+                        spriteSheet={enemyState.spriteSheet}
+                        fallbackSrc={enemyImageSrc}
+                        fallbackPrompt={enemyImagePrompt}
+                        currentPose={enemyAnims[idx] || 'idle'}
+                        fileKey={enemyImageObjectId}
+                        className={`w-full h-full object-contain drop-shadow-[0_10px_30px_rgba(239,68,68,0.3)] origin-bottom ${isBoss ? 'scale-[1.12] sm:scale-[1.28] lg:scale-[1.5]' : 'scale-[1.2] sm:scale-[1.34] lg:scale-[1.55]'}`}
+                        alt={enemyState.name}
+                      />
+                    </div>
                   ) : (
                     <span className="text-8xl z-10 drop-shadow-lg">{isBoss ? '👑' : '👹'}</span>
                   )}

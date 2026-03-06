@@ -73,7 +73,7 @@ export const GameImage: React.FC<GameImageProps> = ({ src, prompt, fileKey, clas
     <img
       src={imageUrl}
       alt={alt}
-      className={`object-cover ${className}`}
+      className={className || 'object-cover'}
       referrerPolicy="no-referrer"
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
